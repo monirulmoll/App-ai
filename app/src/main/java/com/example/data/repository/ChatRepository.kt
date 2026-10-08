@@ -213,30 +213,47 @@ class ChatRepository(context: Context) {
                     ?: currentList.find { it.messageId == incoming.messageId || (it.requestId.isNotEmpty() && it.requestId == incoming.requestId && it.isUser) }?.let { it.originalText ?: it.text }
                     ?: incoming.text
                 processedMessage = incoming.copy(text = original, originalText = original)
-            } else if (incoming.isAi && incoming.text.isNotEmpty()) {
+            } else if (incoming.isAi) {
                 val langInfo = requestLanguageMap[incoming.requestId] ?: lastActiveLanguageInfo
                 val rawPrompt = langInfo?.rawPrompt ?: _messages.value.lastOrNull { it.isUser }?.let { it.originalText ?: it.text } ?: ""
                 val engPrompt = langInfo?.englishPrompt ?: _messages.value.lastOrNull { it.isUser }?.text ?: ""
                 val targetLang = langInfo?.sourceLang ?: _messages.value.lastOrNull { it.isUser }?.sourceLang ?: "en"
                 val isLatin = langInfo?.isLatinScript ?: TranslatorHelper.isMostlyLatin(rawPrompt)
 
-                // 1. Enforce Rohit as creator and scrub competitor company mentions cleanly
-                val formatted = TranslatorHelper.sanitizeAndFormatReply(
-                    rawAiResponse = incoming.text,
-                    rawPrompt = rawPrompt,
-                    englishPrompt = engPrompt,
-                    targetLang = targetLang,
-                    isLatinScript = isLatin
-                )
+                // Model consistency: ensure the message reflects the model chosen by user for this chat
+                val existingMsg = _messages.value.find {
+                    it.messageId == incoming.messageId ||
+                    (incoming.requestId.isNotEmpty() && it.requestId == incoming.requestId && it.isAi)
+                }
+                val requestedModel = existingMsg?.model?.takeIf { it.isNotBlank() }
+                    ?: _currentConversation.value?.model?.takeIf { it.isNotBlank() }
+                    ?: _settings.value.modelName
 
-                // 2. If target language is non-English, translate:
-                // User requirement: "user agar pure language bole toh pure language me translate hoga aur agar latin bole toh har jagah abhi jaise latin ho rha hai waisa hoga"
-                val finalDisplayText = if (targetLang != "en" && targetLang != "auto") {
-                    if (TranslatorHelper.isCreatorOrIdentityQuery(rawPrompt, engPrompt)) {
-                        val lowRaw = rawPrompt.lowercase()
-                        if (targetLang.startsWith("hi") || targetLang.startsWith("bn") ||
-                            lowRaw.contains("banaya") || lowRaw.contains("baniyeche") || lowRaw.contains("banieche")) {
-                            formatted
+                if (incoming.text.isNotEmpty()) {
+                    // 1. Enforce Rohit as creator and scrub competitor company mentions cleanly
+                    val formatted = TranslatorHelper.sanitizeAndFormatReply(
+                        rawAiResponse = incoming.text,
+                        rawPrompt = rawPrompt,
+                        englishPrompt = engPrompt,
+                        targetLang = targetLang,
+                        isLatinScript = isLatin
+                    )
+
+                    // 2. If target language is non-English, translate back into user language
+                    val finalDisplayText = if (targetLang != "en" && targetLang != "auto") {
+                        if (TranslatorHelper.isCreatorOrIdentityQuery(rawPrompt, engPrompt)) {
+                            val lowRaw = rawPrompt.lowercase()
+                            if (targetLang.startsWith("hi") || targetLang.startsWith("bn") ||
+                                lowRaw.contains("banaya") || lowRaw.contains("baniyeche") || lowRaw.contains("banieche") ||
+                                lowRaw.contains("toiri") || lowRaw.contains("বানিয়ে")) {
+                                formatted
+                            } else {
+                                TranslatorHelper.translateFromEnglishToUserLang(
+                                    englishText = formatted,
+                                    targetLang = targetLang,
+                                    preferRomanized = isLatin
+                                )
+                            }
                         } else {
                             TranslatorHelper.translateFromEnglishToUserLang(
                                 englishText = formatted,
@@ -245,17 +262,13 @@ class ChatRepository(context: Context) {
                             )
                         }
                     } else {
-                        TranslatorHelper.translateFromEnglishToUserLang(
-                            englishText = formatted,
-                            targetLang = targetLang,
-                            preferRomanized = isLatin
-                        )
+                        formatted
                     }
-                } else {
-                    formatted
-                }
 
-                processedMessage = incoming.copy(text = finalDisplayText)
+                    processedMessage = incoming.copy(text = finalDisplayText, model = requestedModel)
+                } else {
+                    processedMessage = incoming.copy(model = requestedModel)
+                }
             }
 
             val currentList = _messages.value.toMutableList()

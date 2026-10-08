@@ -227,7 +227,16 @@ class FirebaseRtdbManager(private val context: Context) {
                     convRef.child("prompt").setValue(message.text)
                     convRef.child("lastPrompt").setValue(message.text)
                     convRef.child("model").setValue(message.model)
+                    convRef.child("selected_model").setValue(message.model)
                     convRef.child("maker").setValue("Rohit")
+
+                    // Also broadcast to root level nodes for Termux LLM runner scripts
+                    if (message.model.isNotEmpty()) {
+                        db.getReference("model").setValue(message.model)
+                        db.getReference("selected_model").setValue(message.model)
+                        db.getReference("active_model").setValue(message.model)
+                        db.getReference("current_model").child("model").setValue(message.model)
+                    }
                 } catch (_: Exception) {}
 
                 onSuccess()
@@ -364,12 +373,19 @@ class FirebaseRtdbManager(private val context: Context) {
 
         // 1. Root level current_model node
         db.getReference("current_model").setValue(modelData)
+        db.getReference("model").setValue(modelName)
+        db.getReference("selected_model").setValue(modelName)
+        db.getReference("active_model").setValue(modelName)
 
         // 2. Also update conversation node if active
         if (!conversationId.isNullOrEmpty()) {
             db.getReference("conversations")
                 .child(conversationId)
                 .child("model")
+                .setValue(modelName)
+            db.getReference("conversations")
+                .child(conversationId)
+                .child("selected_model")
                 .setValue(modelName)
         }
     }

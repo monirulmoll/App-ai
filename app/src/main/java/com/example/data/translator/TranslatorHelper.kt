@@ -19,6 +19,14 @@ data class TranslationResult(
 object TranslatorHelper {
     private const val TAG = "TranslatorHelper"
 
+    private fun logD(tag: String, msg: String) {
+        try { Log.d(tag, msg) } catch (_: Throwable) {}
+    }
+
+    private fun logW(tag: String, msg: String) {
+        try { Log.w(tag, msg) } catch (_: Throwable) {}
+    }
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
@@ -46,22 +54,65 @@ object TranslatorHelper {
         "tomake ke baniyeche" to "who made you",
         "tumake ke banieche" to "who made you",
         "tomake ke banieche" to "who made you",
+        "apnake ke baniyeche" to "who made you",
+        "apnake ke banieche" to "who made you",
+        "tomake ke toiri koreche" to "who made you",
+        "tumake ke toiri koreche" to "who made you",
         "tumi kar toiri" to "who made you",
         "tomar creator ke" to "who is your creator",
         "tomar maker ke" to "who is your maker",
         "tumi ke" to "who are you",
+        "apni ke" to "who are you",
         "tum kaun ho" to "who are you",
         "aap kaun ho" to "who are you",
         "aap kaun hain" to "who are you",
         "tumi kemon acho" to "how are you",
         "kemon acho" to "how are you",
+        "kemon achis" to "how are you",
+        "apni kemon achen" to "how are you",
+        "aapni kemon achen" to "how are you",
+        "kemon achen" to "how are you",
         "tumi ki korcho" to "what are you doing",
         "ki korcho" to "what are you doing",
         "tum kaise ho" to "how are you",
         "aap kaise ho" to "how are you",
         "kaise ho" to "how are you",
-        "kya kar rahe ho" to "what are you doing"
+        "kya kar rahe ho" to "what are you doing",
+        "apnar naam ki" to "what is your name",
+        "tomar naam ki" to "what is your name",
+        "apka naam kya hai" to "what is your name",
+        "tera naam kya hai" to "what is your name"
     )
+
+    /**
+     * Translates direct text from source language to target language via Google Translate single API.
+     */
+    fun translateDirectGoogle(text: String, sl: String = "auto", tl: String = "en"): String {
+        try {
+            val encoded = Uri.encode(text.trim())
+            val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=$sl&tl=$tl&dt=t&q=$encoded"
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0")
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val bodyStr = response.body?.string() ?: ""
+                    if (bodyStr.isNotEmpty()) {
+                        val json = JSONArray(bodyStr)
+                        val extracted = extractTranslatedText(json)
+                        if (extracted.isNotBlank()) {
+                            return extracted
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            logW(TAG, "translateDirectGoogle failed: ${e.message}")
+        }
+        return text
+    }
 
     /**
      * Translates any input text (Bengali, Hindi, Banglish, Hinglish, Chinese, Japanese, etc.) to English.
@@ -77,10 +128,12 @@ object TranslatorHelper {
 
         // 1. Check direct phonetic dictionary for Banglish / Hinglish / English phrases
         PHONETIC_MAPPINGS[cleanLow]?.let { mapped ->
-            Log.d(TAG, "Direct phonetic match: '$trimmed' -> '$mapped'")
+            logD(TAG, "Direct phonetic match: '$trimmed' -> '$mapped'")
             val lang = when {
-                cleanLow.contains("tumi") || cleanLow.contains("tomake") || cleanLow.contains("acho") || cleanLow.contains("baniyeche") || cleanLow.contains("banieche") -> "bn"
-                cleanLow.contains("tumhe") || cleanLow.contains("banaya") || cleanLow.contains("kaun") || cleanLow.contains("kaise") || cleanLow.contains("kya") -> "hi"
+                cleanLow.contains("tumi") || cleanLow.contains("tomake") || cleanLow.contains("acho") ||
+                        cleanLow.contains("baniyeche") || cleanLow.contains("banieche") || cleanLow.contains("achen") -> "bn"
+                cleanLow.contains("tumhe") || cleanLow.contains("banaya") || cleanLow.contains("kaun") ||
+                        cleanLow.contains("kaise") || cleanLow.contains("kya") -> "hi"
                 else -> "en"
             }
             return@withContext TranslationResult(
@@ -91,7 +144,55 @@ object TranslatorHelper {
             )
         }
 
-        // 2. Standard Google Translate call to English
+        // 2. Check Banglish / Hinglish / Bengali question patterns:
+        // Examples: "moonshot ki", "google ki", "dubai ki", "গুগল কী জিনিস", "python ki", "kya hai"
+        val whatIsRegex = Regex("^(?:what is\\s+)?(.+?)\\s+(?:ki|kya|kya hai|kya he|kya hota hai|ki jinish|ki jinis|kake bole|কী|কী জিনিস|কাকে বলে)[?]?$", RegexOption.IGNORE_CASE)
+        val whatMatch = whatIsRegex.find(cleanLow)
+        if (whatMatch != null) {
+            val rawSubject = whatMatch.groupValues[1].trim()
+            if (rawSubject.isNotEmpty()) {
+                val isBengali = cleanLow.endsWith("ki") || cleanLow.contains("ki jinish") || cleanLow.contains("ki jinis") ||
+                        cleanLow.contains("kake bole") || cleanLow.contains("কী") || cleanLow.contains("কাকে বলে")
+                val lang = if (isBengali) "bn" else "hi"
+
+                val subjectEnglish = if (!isMostlyLatin(rawSubject)) {
+                    translateDirectGoogle(rawSubject, lang, "en").ifBlank { rawSubject }
+                } else {
+                    rawSubject
+                }
+
+                val englishQuery = "What is $subjectEnglish?"
+                logD(TAG, "Question pattern matched: '$trimmed' -> '$englishQuery' ($lang, latin=$isLatin)")
+                return@withContext TranslationResult(
+                    originalText = trimmed,
+                    translatedEnglish = englishQuery,
+                    detectedLanguage = lang,
+                    isLatinScript = isLatin
+                )
+            }
+        }
+
+        // 3. Check "how to" patterns: "kibhabe code likhbo", "kaise kare"
+        val howToRegex = Regex("^(?:kibhabe|ki bhabe|kaise)\\s+(.+)[?]?$", RegexOption.IGNORE_CASE)
+        val howMatch = howToRegex.find(cleanLow)
+        if (howMatch != null) {
+            val rawAction = howMatch.groupValues[1].trim()
+            if (rawAction.isNotEmpty()) {
+                val isBengali = cleanLow.startsWith("kibhabe") || cleanLow.startsWith("ki bhabe")
+                val lang = if (isBengali) "bn" else "hi"
+                val translatedAction = translateDirectGoogle(rawAction, "auto", "en").ifBlank { rawAction }
+                val englishQuery = "How to $translatedAction?"
+                logD(TAG, "How-to pattern matched: '$trimmed' -> '$englishQuery' ($lang)")
+                return@withContext TranslationResult(
+                    originalText = trimmed,
+                    translatedEnglish = englishQuery,
+                    detectedLanguage = lang,
+                    isLatinScript = isLatin
+                )
+            }
+        }
+
+        // 4. Standard Google Translate call to English
         var translatedText = trimmed
         var detectedLang = "en"
 
@@ -119,13 +220,13 @@ object TranslatorHelper {
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Standard translate error: ${e.message}")
+            logW(TAG, "Standard translate error: ${e.message}")
         }
 
-        // 3. If translation didn't change and detected was Bengali/Hindi and Latin script, use Google InputTools
-        if (translatedText.equals(trimmed, ignoreCase = true) && isLatin && !isCommonEnglish(cleanLow)) {
+        // 5. If translation didn't change and detected was Bengali/Hindi and Latin script, use Google InputTools cautiously
+        if (translatedText.equals(trimmed, ignoreCase = true) && isLatin && !isCommonEnglish(cleanLow) && !isSingleTechnicalTerm(cleanLow)) {
             val itcList = if (detectedLang.startsWith("bn")) listOf("bn-t-i0-und", "hi-t-i0-und")
-                else listOf("hi-t-i0-und", "bn-t-i0-und")
+            else listOf("hi-t-i0-und", "bn-t-i0-und")
 
             for (itc in itcList) {
                 try {
@@ -162,13 +263,13 @@ object TranslatorHelper {
                         }
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "InputTools transliteration error: ${e.message}")
+                    logW(TAG, "InputTools transliteration error: ${e.message}")
                 }
                 if (!translatedText.equals(trimmed, ignoreCase = true)) break
             }
         }
 
-        Log.d(TAG, "Final translation to English: '$trimmed' -> '$translatedText' ($detectedLang)")
+        logD(TAG, "Final translation to English: '$trimmed' -> '$translatedText' ($detectedLang)")
         TranslationResult(
             originalText = trimmed,
             translatedEnglish = translatedText,
@@ -178,14 +279,25 @@ object TranslatorHelper {
     }
 
     private fun isCommonEnglish(text: String): Boolean {
-        val engWords = setOf("hello", "hi", "how", "are", "you", "who", "make", "made", "created", "what", "is", "your", "name", "the", "this", "that", "why", "where", "when", "can", "help", "me", "tell", "about")
+        val engWords = setOf(
+            "hello", "hi", "how", "are", "you", "who", "make", "made", "created",
+            "what", "is", "your", "name", "the", "this", "that", "why", "where",
+            "when", "can", "help", "me", "tell", "about", "explain", "write", "code"
+        )
         val words = text.split(" ").filter { it.isNotBlank() }
         val matches = words.count { it in engWords }
         return matches >= 2 || (words.size == 1 && words.first() in engWords)
     }
 
+    private fun isSingleTechnicalTerm(text: String): Boolean {
+        val words = text.split(" ").filter { it.isNotBlank() }
+        if (words.size > 2) return false
+        val techTerms = setOf("google", "moonshot", "chatgpt", "openai", "meta", "microsoft", "python", "kotlin", "java", "dubai", "apple", "deepseek", "qwen", "llama", "gemma", "mistral")
+        return words.any { it in techTerms }
+    }
+
     /**
-     * Translates English text back into user's language using English letters (Romanized / Latin alphabet).
+     * Translates English text back into user's language using English letters (Romanized / Latin alphabet) or Native Script.
      */
     suspend fun translateFromEnglishToUserLang(
         englishText: String,
@@ -214,7 +326,7 @@ object TranslatorHelper {
                 val translated = extractTranslatedText(json)
                 val romanized = extractRomanizedText(json)
 
-                // If user prefers Romanized (Latin letters)
+                // If user prefers Romanized (Latin letters, e.g. Banglish / Hinglish)
                 if (preferRomanized) {
                     if (!romanized.isNullOrBlank()) {
                         return@withContext romanized
@@ -223,18 +335,53 @@ object TranslatorHelper {
                         return@withContext translated
                     }
                 } else {
-                    // Pure language (native script) requested by user
+                    // Pure language (native script, e.g. Bengali script or Devanagari) requested by user
                     if (translated.isNotBlank()) {
-                        return@withContext translated
+                        return@withContext normalizeScriptForLanguage(translated, targetLang)
                     }
                 }
 
-                return@withContext if (translated.isNotBlank()) translated else trimmed
+                val fallback = if (translated.isNotBlank()) translated else trimmed
+                return@withContext normalizeScriptForLanguage(fallback, targetLang)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Translation from English failed: ${e.message}")
+            logW(TAG, "Translation from English failed: ${e.message}")
             trimmed
         }
+    }
+
+    /**
+     * Normalizes scripts to prevent accidental script mixing (e.g. Devanagari characters in Bengali output).
+     */
+    fun normalizeScriptForLanguage(text: String, targetLang: String): String {
+        if (targetLang.startsWith("bn", ignoreCase = true)) {
+            // Check for stray Devanagari characters (0x0905..0x094D) and convert to corresponding Bengali characters (+0x80)
+            val sb = StringBuilder(text.length)
+            for (ch in text) {
+                val code = ch.code
+                if (code in 0x0905..0x0939 || code in 0x093E..0x094D) {
+                    val bengaliCode = code + 0x80
+                    sb.append(bengaliCode.toChar())
+                } else {
+                    sb.append(ch)
+                }
+            }
+            return sb.toString()
+        } else if (targetLang.startsWith("hi", ignoreCase = true)) {
+            // Check for stray Bengali characters and convert back to Devanagari (-0x80)
+            val sb = StringBuilder(text.length)
+            for (ch in text) {
+                val code = ch.code
+                if (code in 0x0985..0x09B9 || code in 0x09BE..0x09CD) {
+                    val devanagariCode = code - 0x80
+                    sb.append(devanagariCode.toChar())
+                } else {
+                    sb.append(ch)
+                }
+            }
+            return sb.toString()
+        }
+        return text
     }
 
     private fun extractTranslatedText(json: JSONArray): String {
@@ -257,7 +404,6 @@ object TranslatorHelper {
         if (json.length() == 0 || json.isNull(0)) return null
         val firstArray = json.optJSONArray(0) ?: return null
 
-        // 1. Look from bottom up for the combined romanized chunk: [null, null, "full romanized text"]
         for (i in firstArray.length() - 1 downTo 0) {
             val chunk = firstArray.optJSONArray(i) ?: continue
             if (chunk.length() > 2 && !chunk.isNull(2)) {
@@ -282,7 +428,6 @@ object TranslatorHelper {
         for (ch in text) {
             if (Character.isLetter(ch)) {
                 totalLetters++
-                // Matches ASCII letters and Latin extended/diacritics (Pinyin accents, Romaji macrons, European accents)
                 if (ch.code in 65..90 || ch.code in 97..122 || ch.code in 192..591) {
                     latinCount++
                 }
@@ -305,7 +450,9 @@ object TranslatorHelper {
             "kisne banaya", "tumhe kisne banaya", "apko kisne banaya", "aapko kisne banaya",
             "kisne banaya tumhe", "tume kisne banaya", "tujhe kisne banaya",
             "ke banieche", "ke baniyeche", "tomake ke banieche", "tumake ke baniyeche",
-            "tumi kar toiri", "tumi ke", "tum kaun ho", "aap kaun ho"
+            "tumi kar toiri", "apnake ke baniyeche", "apnake ke banieche",
+            "tomake ke toiri koreche", "tumake ke toiri koreche",
+            "tumi ke", "apni ke", "tum kaun ho", "aap kaun ho", "aap kaun hain"
         )
 
         return keywords.any { cleanRaw.contains(it) || cleanEng.contains(it) }
@@ -314,11 +461,12 @@ object TranslatorHelper {
     fun getLanguageSpecificCreatorReply(rawPrompt: String, targetLang: String, isLatinScript: Boolean): String {
         val low = rawPrompt.lowercase().trim()
         val isBengali = targetLang.startsWith("bn", ignoreCase = true) ||
-            low.contains("baniyeche") || low.contains("banieche") || low.contains("tomake") ||
-            low.contains("tumake") || low.contains("toiri") || low.contains("বানিয়ে") || low.contains("তোমাকে")
+                low.contains("baniyeche") || low.contains("banieche") || low.contains("tomake") ||
+                low.contains("tumake") || low.contains("toiri") || low.contains("বানিয়ে") ||
+                low.contains("তোমাকে") || low.contains("তৈরি")
         val isHindi = targetLang.startsWith("hi", ignoreCase = true) ||
-            low.contains("banaya") || low.contains("tumhe") || low.contains("kisne") ||
-            low.contains("apko") || low.contains("aapko") || low.contains("बनाया") || low.contains("किसने")
+                low.contains("banaya") || low.contains("tumhe") || low.contains("kisne") ||
+                low.contains("apko") || low.contains("aapko") || low.contains("बनाया") || low.contains("किसने")
 
         return when {
             isBengali -> {
@@ -335,7 +483,9 @@ object TranslatorHelper {
 
     /**
      * Cleans competitor attribution (Anthropic, Alibaba, OpenAI, Google, Meta, etc.)
-     * and guarantees the reply gives Rohit as creator in exact language (pure or latin).
+     * ONLY when referring to the creator or creation of the AI model,
+     * without altering general factual mentions of companies (e.g. "Google is a search engine").
+     * Guarantees the reply gives Rohit as creator for identity queries.
      */
     fun sanitizeAndFormatReply(
         rawAiResponse: String,
@@ -344,12 +494,15 @@ object TranslatorHelper {
         targetLang: String,
         isLatinScript: Boolean
     ): String {
-        // 1. Scrub competitor company names and replace with Rohit
         val companies = "Anthropic|Alibaba Cloud|Alibaba|OpenAI|Google|Meta|Mistral|DeepSeek|Microsoft|Baidu"
+
+        // 1. Scrub model attribution phrases ONLY (never bare company names in factual sentences!)
         var cleaned = rawAiResponse
-            .replace(Regex("(?i)(created|developed|trained|built|made) by ($companies)"), "created by Rohit")
-            .replace(Regex("(?i)($companies) (developed|created|trained|made|built) me"), "Rohit made me")
-            .replace(Regex("(?i)($companies)"), "Rohit")
+            .replace(Regex("(?i)\\b(?:created|developed|trained|built|made|fine-tuned)\\s+by\\s+(?:$companies)\\b"), "created by Rohit")
+            .replace(Regex("(?i)\\b(?:$companies)\\s+(?:developed|created|trained|made|built|programmed)\\s+(?:me|this model|this ai|gemo ai)\\b"), "Rohit made me")
+            .replace(Regex("(?i)\\b(?:I am|I'm|As an AI|I was|This model was|This AI was)\\s+(?:an? \\w+ )*(?:created|developed|trained|built|made)\\s+by\\s+(?:$companies)\\b"), "I am an AI created by Rohit")
+            .replace(Regex("(?i)\\b(?:large language model|language model),?\\s+(?:trained|developed|created)\\s+by\\s+(?:$companies)\\b"), "large language model, created by Rohit")
+            .replace(Regex("(?i)\\b(?:trained|developed|created)\\s+by\\s+(?:$companies)\\b"), "created by Rohit")
 
         // 2. If user asked who made the AI or asked identity:
         if (isCreatorOrIdentityQuery(rawPrompt, englishPrompt)) {
@@ -360,7 +513,8 @@ object TranslatorHelper {
                 "who developed you", "who is your developer", "who designed you",
                 "who programmed you", "who founded you", "who invented you",
                 "kisne banaya", "tumhe kisne banaya", "apko kisne banaya", "aapko kisne banaya",
-                "kisne banaya tumhe", "tomake ke baniyeche", "tumake ke baniyeche"
+                "kisne banaya tumhe", "tomake ke baniyeche", "tumake ke baniyeche",
+                "apnake ke baniyeche", "tumi kar toiri"
             )
 
             val creatorReply = getLanguageSpecificCreatorReply(rawPrompt, targetLang, isLatinScript)

@@ -4,11 +4,17 @@ import com.example.data.model.ChatMessage
 import com.example.data.model.Conversation
 import com.example.data.model.LlmSettings
 import com.example.data.translator.TranslatorHelper
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
 class ChatMessageUnitTest {
     @Test
     fun testChatMessageUserStatus() {
@@ -77,11 +83,14 @@ class ChatMessageUnitTest {
         assertTrue(TranslatorHelper.isCreatorOrIdentityQuery("tumhe kisne banaya", "who made you"))
         assertTrue(TranslatorHelper.isCreatorOrIdentityQuery("kisne banaya tumhe", "who created you"))
         assertTrue(TranslatorHelper.isCreatorOrIdentityQuery("tomake ke banieche", "who is your maker"))
+        assertTrue(TranslatorHelper.isCreatorOrIdentityQuery("tumake ke baniyeche", "who made you"))
         assertFalse(TranslatorHelper.isCreatorOrIdentityQuery("What is the capital of France?", "What is the capital of France?"))
+        assertFalse(TranslatorHelper.isCreatorOrIdentityQuery("google ki", "What is google?"))
+        assertFalse(TranslatorHelper.isCreatorOrIdentityQuery("moonshot ki", "What is moonshot?"))
     }
 
     @Test
-    fun testSanitizeCompetitorAndEnforceRohit() {
+    fun testSanitizeCompetitorAttributionReplacedWithRohit() {
         val competitorResp = "I am a large language model created by Anthropic. I am designed to assist users in generating text."
         val sanitized = TranslatorHelper.sanitizeAndFormatReply(
             rawAiResponse = competitorResp,
@@ -92,5 +101,49 @@ class ChatMessageUnitTest {
         )
         assertTrue(sanitized.contains("Rohit"))
         assertFalse(sanitized.contains("Anthropic"))
+    }
+
+    @Test
+    fun testFactualCompanyMentionsNotReplacedWithRohit() {
+        // Bug fix verification: factual answers about Google, Microsoft, OpenAI should never turn into Rohit!
+        val factualResp = "Google is a multinational technology company focusing on search engines, cloud computing, and software. Microsoft and Google have headquarters in multiple cities."
+        val sanitized = TranslatorHelper.sanitizeAndFormatReply(
+            rawAiResponse = factualResp,
+            rawPrompt = "google ki",
+            englishPrompt = "What is google?",
+            targetLang = "bn",
+            isLatinScript = true
+        )
+        assertTrue(sanitized.contains("Google"))
+        assertTrue(sanitized.contains("Microsoft"))
+        assertFalse(sanitized.startsWith("Rohit is a"))
+    }
+
+    @Test
+    fun testBanglishQuestionTranslationPatterns() = runBlocking {
+        val moonshotResult = TranslatorHelper.translateToEnglish("moonshot ki")
+        assertEquals("What is moonshot?", moonshotResult.translatedEnglish)
+        assertEquals("bn", moonshotResult.detectedLanguage)
+        assertTrue(moonshotResult.isLatinScript)
+
+        val googleResult = TranslatorHelper.translateToEnglish("google ki")
+        assertEquals("What is google?", googleResult.translatedEnglish)
+        assertEquals("bn", googleResult.detectedLanguage)
+
+        val dubaiResult = TranslatorHelper.translateToEnglish("dubai ki")
+        assertEquals("What is dubai?", dubaiResult.translatedEnglish)
+
+        val creatorResult = TranslatorHelper.translateToEnglish("tumake ke baniyeche")
+        assertEquals("who made you", creatorResult.translatedEnglish)
+    }
+
+    @Test
+    fun testScriptNormalizationForBengali() {
+        // Devanagari "सहायता" (U+0938 U+0939 U+093E U+092F U+0924 U+093E)
+        val devanagariText = "\u0938\u0939\u093E\u092F\u0924\u093E"
+        val normalized = TranslatorHelper.normalizeScriptForLanguage(devanagariText, "bn")
+        // Should convert to Bengali characters (U+09B8 U+09B9 U+09BE U+09AF U+09A4 U+09BE)
+        val expectedBengali = "\u09B8\u09B9\u09BE\u09AF\u09A4\u09BE"
+        assertEquals(expectedBengali, normalized)
     }
 }
