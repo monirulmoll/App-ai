@@ -1,0 +1,6 @@
+{
+  "name": "Gemo AI",
+  "description": "An AI chatting application powered by Firebase Realtime Database with live multi-model LLM responses, modern Gemini UI, and real-time generation tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
