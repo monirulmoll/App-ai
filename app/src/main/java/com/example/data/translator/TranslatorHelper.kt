@@ -42,18 +42,48 @@ object TranslatorHelper {
         "who is your creator" to "who made you",
         "who built you" to "who made you",
         "who developed you" to "who made you",
+        "who made it" to "who made you",
+        "who made this" to "who made you",
+        "who created this" to "who made you",
+        "who made him" to "who made you",
+        "who created him" to "who made you",
         "tumhe kisne banaya" to "who made you",
         "tumhe kisne banaya hai" to "who made you",
+        "tumhe kisne baniya" to "who made you",
         "kisne banaya tumhe" to "who made you",
+        "kisne baniya tumhe" to "who made you",
         "kisne banaya" to "who made you",
+        "kisne baniya" to "who made you",
+        "kisne banya" to "who made you",
+        "kisine banaya" to "who made you",
+        "usse kisne banaya" to "who made you",
+        "usse kisne baniya" to "who made you",
+        "usse kisne banaya hai" to "who made you",
+        "isse kisne banaya" to "who made you",
+        "isse kisne baniya" to "who made you",
+        "isko kisne banaya" to "who made you",
+        "isko kisne baniya" to "who made you",
+        "usko kisne banaya" to "who made you",
+        "ye kisne banaya" to "who made you",
+        "ye kisne baniya" to "who made you",
+        "yeh kisne banaya" to "who made you",
         "apko kisne banaya" to "who made you",
         "aapko kisne banaya" to "who made you",
+        "apko kisne baniya" to "who made you",
         "tume kisne banaya" to "who made you",
         "tujhe kisne banaya" to "who made you",
         "tumake ke baniyeche" to "who made you",
         "tomake ke baniyeche" to "who made you",
         "tumake ke banieche" to "who made you",
         "tomake ke banieche" to "who made you",
+        "eta ke baniyeche" to "who made you",
+        "eta ke banieche" to "who made you",
+        "eita ke baniyeche" to "who made you",
+        "ota ke baniyeche" to "who made you",
+        "oita ke baniyeche" to "who made you",
+        "ke baniyeche" to "who made you",
+        "ke banieche" to "who made you",
+        "ke toiri koreche" to "who made you",
         "apnake ke baniyeche" to "who made you",
         "apnake ke banieche" to "who made you",
         "tomake ke toiri koreche" to "who made you",
@@ -61,6 +91,12 @@ object TranslatorHelper {
         "tumi kar toiri" to "who made you",
         "tomar creator ke" to "who is your creator",
         "tomar maker ke" to "who is your maker",
+        "gemo ai kisne banaya" to "who made you",
+        "gemo ai ke baniyeche" to "who made you",
+        "rohit ke" to "who is rohit",
+        "rohit kaun hai" to "who is rohit",
+        "rohit kon" to "who is rohit",
+        "who is rohit" to "who is rohit",
         "tumi ke" to "who are you",
         "apni ke" to "who are you",
         "tum kaun ho" to "who are you",
@@ -114,6 +150,10 @@ object TranslatorHelper {
         return text
     }
 
+    fun hasBengaliScript(text: String): Boolean = text.any { it.code in 0x0980..0x09FF }
+
+    fun hasDevanagariScript(text: String): Boolean = text.any { it.code in 0x0900..0x097F }
+
     /**
      * Translates any input text (Bengali, Hindi, Banglish, Hinglish, Chinese, Japanese, etc.) to English.
      */
@@ -124,15 +164,17 @@ object TranslatorHelper {
         }
 
         val cleanLow = trimmed.lowercase().replace(Regex("[?!.,;:_~`'\"-]"), "").trim()
-        val isLatin = isMostlyLatin(trimmed)
+        val hasBengali = hasBengaliScript(trimmed)
+        val hasDevanagari = hasDevanagariScript(trimmed)
+        val isLatin = if (hasBengali || hasDevanagari) false else isMostlyLatin(trimmed)
 
         // 1. Check direct phonetic dictionary for Banglish / Hinglish / English phrases
         PHONETIC_MAPPINGS[cleanLow]?.let { mapped ->
             logD(TAG, "Direct phonetic match: '$trimmed' -> '$mapped'")
             val lang = when {
-                cleanLow.contains("tumi") || cleanLow.contains("tomake") || cleanLow.contains("acho") ||
-                        cleanLow.contains("baniyeche") || cleanLow.contains("banieche") || cleanLow.contains("achen") -> "bn"
-                cleanLow.contains("tumhe") || cleanLow.contains("banaya") || cleanLow.contains("kaun") ||
+                hasBengali || cleanLow.contains("tumi") || cleanLow.contains("tomake") || cleanLow.contains("acho") ||
+                        cleanLow.contains("baniyeche") || cleanLow.contains("banieche") || cleanLow.contains("achen") || cleanLow.contains("kemon") -> "bn"
+                hasDevanagari || cleanLow.contains("tumhe") || cleanLow.contains("banaya") || cleanLow.contains("kaun") ||
                         cleanLow.contains("kaise") || cleanLow.contains("kya") -> "hi"
                 else -> "en"
             }
@@ -151,7 +193,7 @@ object TranslatorHelper {
         if (whatMatch != null) {
             val rawSubject = whatMatch.groupValues[1].trim()
             if (rawSubject.isNotEmpty()) {
-                val isBengali = cleanLow.endsWith("ki") || cleanLow.contains("ki jinish") || cleanLow.contains("ki jinis") ||
+                val isBengali = hasBengali || cleanLow.endsWith("ki") || cleanLow.contains("ki jinish") || cleanLow.contains("ki jinis") ||
                         cleanLow.contains("kake bole") || cleanLow.contains("কী") || cleanLow.contains("কাকে বলে")
                 val lang = if (isBengali) "bn" else "hi"
 
@@ -178,11 +220,11 @@ object TranslatorHelper {
         if (howMatch != null) {
             val rawAction = howMatch.groupValues[1].trim()
             if (rawAction.isNotEmpty()) {
-                val isBengali = cleanLow.startsWith("kibhabe") || cleanLow.startsWith("ki bhabe")
+                val isBengali = hasBengali || cleanLow.startsWith("kibhabe") || cleanLow.startsWith("ki bhabe")
                 val lang = if (isBengali) "bn" else "hi"
                 val translatedAction = translateDirectGoogle(rawAction, "auto", "en").ifBlank { rawAction }
                 val englishQuery = "How to $translatedAction?"
-                logD(TAG, "How-to pattern matched: '$trimmed' -> '$englishQuery' ($lang)")
+                logD(TAG, "How-to pattern matched: '$trimmed' -> '$englishQuery' ($lang, latin=$isLatin)")
                 return@withContext TranslationResult(
                     originalText = trimmed,
                     translatedEnglish = englishQuery,
@@ -194,7 +236,11 @@ object TranslatorHelper {
 
         // 4. Standard Google Translate call to English
         var translatedText = trimmed
-        var detectedLang = "en"
+        var detectedLang = when {
+            hasBengali -> "bn"
+            hasDevanagari -> "hi"
+            else -> "en"
+        }
 
         try {
             val encoded = Uri.encode(trimmed)
@@ -334,6 +380,18 @@ object TranslatorHelper {
                     if (isMostlyLatin(translated) && translated.isNotBlank()) {
                         return@withContext translated
                     }
+                    // Transliterate if native script was returned instead of Latin
+                    if (targetLang.startsWith("bn") && hasBengaliScript(translated)) {
+                        val transliterated = transliterateScriptToLatin(translated, "bn")
+                        if (transliterated.isNotBlank() && isMostlyLatin(transliterated)) {
+                            return@withContext transliterated
+                        }
+                    } else if (targetLang.startsWith("hi") && hasDevanagariScript(translated)) {
+                        val transliterated = transliterateScriptToLatin(translated, "hi")
+                        if (transliterated.isNotBlank() && isMostlyLatin(transliterated)) {
+                            return@withContext transliterated
+                        }
+                    }
                 } else {
                     // Pure language (native script, e.g. Bengali script or Devanagari) requested by user
                     if (translated.isNotBlank()) {
@@ -348,6 +406,23 @@ object TranslatorHelper {
             logW(TAG, "Translation from English failed: ${e.message}")
             trimmed
         }
+    }
+
+    fun transliterateScriptToLatin(nativeText: String, lang: String): String {
+        try {
+            val encoded = Uri.encode(nativeText.trim())
+            val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=$lang&tl=en&dt=t&dt=rm&q=$encoded"
+            val request = Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val bodyStr = response.body?.string() ?: ""
+                    val json = JSONArray(bodyStr)
+                    val rom = extractRomanizedText(json)
+                    if (!rom.isNullOrBlank() && isMostlyLatin(rom)) return rom
+                }
+            }
+        } catch (_: Exception) {}
+        return nativeText
     }
 
     /**
@@ -404,22 +479,39 @@ object TranslatorHelper {
         if (json.length() == 0 || json.isNull(0)) return null
         val firstArray = json.optJSONArray(0) ?: return null
 
-        for (i in firstArray.length() - 1 downTo 0) {
-            val chunk = firstArray.optJSONArray(i) ?: continue
-            if (chunk.length() > 2 && !chunk.isNull(2)) {
-                val text = chunk.optString(2)
-                if (text.isNotBlank() && text != "null" && isMostlyLatin(text)) {
-                    return text.trim()
+        // 1. Check last element for combined romanized text
+        val lastIdx = firstArray.length() - 1
+        if (lastIdx >= 0) {
+            val lastChunk = firstArray.optJSONArray(lastIdx)
+            if (lastChunk != null) {
+                val romTarget = if (lastChunk.length() > 2 && !lastChunk.isNull(2)) lastChunk.optString(2) else null
+                val romSrc = if (lastChunk.length() > 3 && !lastChunk.isNull(3)) lastChunk.optString(3) else null
+                val rom = when {
+                    !romTarget.isNullOrBlank() && romTarget != "null" && isMostlyLatin(romTarget) -> romTarget
+                    !romSrc.isNullOrBlank() && romSrc != "null" && isMostlyLatin(romSrc) -> romSrc
+                    else -> null
                 }
-            }
-            if (chunk.length() > 3 && !chunk.isNull(3)) {
-                val text = chunk.optString(3)
-                if (text.isNotBlank() && text != "null" && isMostlyLatin(text)) {
-                    return text.trim()
-                }
+                if (rom != null) return rom.trim()
             }
         }
-        return null
+
+        // 2. Iterate backwards or concatenate chunks
+        val sb = StringBuilder()
+        for (i in 0 until firstArray.length()) {
+            val chunk = firstArray.optJSONArray(i) ?: continue
+            val romTarget = if (chunk.length() > 2 && !chunk.isNull(2)) chunk.optString(2) else null
+            val romSrc = if (chunk.length() > 3 && !chunk.isNull(3)) chunk.optString(3) else null
+            val rom = when {
+                !romTarget.isNullOrBlank() && romTarget != "null" && isMostlyLatin(romTarget) -> romTarget
+                !romSrc.isNullOrBlank() && romSrc != "null" && isMostlyLatin(romSrc) -> romSrc
+                else -> null
+            }
+            if (rom != null) {
+                sb.append(rom.trim()).append(" ")
+            }
+        }
+        val combined = sb.toString().trim()
+        return if (combined.isNotBlank()) combined else null
     }
 
     fun isMostlyLatin(text: String): Boolean {
@@ -440,43 +532,146 @@ object TranslatorHelper {
         val cleanRaw = rawPrompt.lowercase().replace(Regex("[?!.,;:_~`'\"-]"), "").trim()
         val cleanEng = englishPrompt.lowercase().replace(Regex("[?!.,;:_~`'\"-]"), "").trim()
 
-        val keywords = listOf(
-            "who made you", "who make you", "who created you", "who create you",
-            "who is your creator", "who is your maker", "who built you",
-            "who developed you", "who programmed you", "who designed you",
-            "who is your developer", "who invented you", "who founded you",
-            "who are you made by", "who owns you", "what company made you",
-            "who trained you", "whose ai are you", "who are you",
-            "kisne banaya", "tumhe kisne banaya", "apko kisne banaya", "aapko kisne banaya",
-            "kisne banaya tumhe", "tume kisne banaya", "tujhe kisne banaya",
-            "ke banieche", "ke baniyeche", "tomake ke banieche", "tumake ke baniyeche",
-            "tumi kar toiri", "apnake ke baniyeche", "apnake ke banieche",
-            "tomake ke toiri koreche", "tumake ke toiri koreche",
-            "tumi ke", "apni ke", "tum kaun ho", "aap kaun ho", "aap kaun hain"
-        )
+        // 1. Direct keywords for Hindi / Hinglish ("banaya", "baniya", "banya")
+        if (cleanRaw.contains("kisne banaya") || cleanRaw.contains("kisne baniya") ||
+            cleanRaw.contains("kisne banya") || cleanRaw.contains("kisine banaya") ||
+            cleanRaw.contains("kisine baniya") || cleanRaw.contains("banaya kisne") ||
+            cleanRaw.contains("baniya kisne") || cleanRaw.contains("maker kaun") ||
+            cleanRaw.contains("creator kaun") || cleanRaw.contains("developer kaun") ||
+            cleanRaw.contains("किसने बनाया") || cleanRaw.contains("किसने बनाए")
+        ) return true
 
-        return keywords.any { cleanRaw.contains(it) || cleanEng.contains(it) }
+        // Pronoun + banaya/baniya/banya ("usse kisne banaya", "tumhe kisne banaya", "isse kisne baniya", etc.)
+        if ((cleanRaw.contains("usse") || cleanRaw.contains("use") || cleanRaw.contains("isse") ||
+             cleanRaw.contains("tumhe") || cleanRaw.contains("tujhe") || cleanRaw.contains("aapko") ||
+             cleanRaw.contains("apko") || cleanRaw.contains("ye") || cleanRaw.contains("yeh") ||
+             cleanRaw.contains("isko") || cleanRaw.contains("usko") || cleanRaw.contains("तुम्हें") ||
+             cleanRaw.contains("इसे") || cleanRaw.contains("उसने") || cleanRaw.contains("इसको")) &&
+            (cleanRaw.contains("banaya") || cleanRaw.contains("baniya") || cleanRaw.contains("banya") ||
+             cleanRaw.contains("banaye") || cleanRaw.contains("बनाया") || cleanRaw.contains("बनाये"))
+        ) return true
+
+        // 2. Direct keywords for Bengali / Banglish ("baniyeche", "banieche", "toiri", "বানিয়েছে")
+        if (cleanRaw.contains("ke baniyeche") || cleanRaw.contains("ke banieche") ||
+            cleanRaw.contains("ke toiri") || cleanRaw.contains("kar toiri") ||
+            cleanRaw.contains("baniyeche ke") || cleanRaw.contains("banieche ke") ||
+            cleanRaw.contains("toiri koreche") || cleanRaw.contains("toiri korse") ||
+            cleanRaw.contains("বানিয়েছে") || cleanRaw.contains("বানিয়েছে") || cleanRaw.contains("তৈরি করেছে") ||
+            cleanRaw.contains("কে বানিয়েছে") || cleanRaw.contains("কে বানিয়েছে") || cleanRaw.contains("কে তৈরি করেছে") ||
+            cleanRaw.contains("creator ke") || cleanRaw.contains("maker ke") || cleanRaw.contains("developer ke")
+        ) return true
+
+        if ((cleanRaw.contains("tomake") || cleanRaw.contains("tumake") || cleanRaw.contains("apnake") ||
+             cleanRaw.contains("eta") || cleanRaw.contains("eita") || cleanRaw.contains("ota") || cleanRaw.contains("oita") ||
+             cleanRaw.contains("তোমাকে") || cleanRaw.contains("আপনাকে") || cleanRaw.contains("এটা") || cleanRaw.contains("এটি")) &&
+            (cleanRaw.contains("baniyeche") || cleanRaw.contains("banieche") || cleanRaw.contains("toiri") ||
+             cleanRaw.contains("বানিয়েছে") || cleanRaw.contains("বানিয়েছে") || cleanRaw.contains("তৈরি"))
+        ) return true
+
+        // 3. Identity questions ("tum kaun ho", "tumi ke", "apni ke", "aap kaun ho", "তুমি কে")
+        if (cleanRaw.contains("tum kaun ho") || cleanRaw.contains("aap kaun ho") ||
+            cleanRaw.contains("aap kaun hain") || cleanRaw.contains("tumi ke") ||
+            cleanRaw.contains("apni ke") || cleanRaw.contains("tumi kon") ||
+            cleanRaw.contains("তুমি কে") || cleanRaw.contains("আপনি কে") ||
+            cleanRaw.contains("तुम कौन हो") || cleanRaw.contains("आप कौन हैं") || cleanRaw.contains("आप कौन हो")
+        ) return true
+
+        // 4. Questions about Rohit ("rohit ke", "rohit kaun hai", "rohit kon", "who is rohit", "রোহিত কে")
+        if (cleanRaw.contains("rohit kaun") || cleanRaw.contains("rohit ke") ||
+            cleanRaw.contains("rohit kon") || cleanRaw.contains("rohit who") ||
+            cleanRaw.contains("রোহিত কে") || cleanRaw.contains("রোহিত কোন") ||
+            cleanRaw.contains("रोहित कौन") || cleanEng.contains("who is rohit")
+        ) return true
+
+        // 5. English patterns
+        if (cleanEng.contains("who made") || cleanEng.contains("who make") ||
+            cleanEng.contains("who created") || cleanEng.contains("who create") ||
+            cleanEng.contains("who built") || cleanEng.contains("who developed") ||
+            cleanEng.contains("who programmed") || cleanEng.contains("who designed") ||
+            cleanEng.contains("who invented") || cleanEng.contains("who founded") ||
+            cleanEng.contains("who is your creator") || cleanEng.contains("who is your maker") ||
+            cleanEng.contains("who is your developer") || cleanEng.contains("who trained you") ||
+            cleanEng.contains("who are you") || cleanEng.contains("who made you") ||
+            cleanEng.contains("who made it") || cleanEng.contains("who made this") ||
+            cleanEng.contains("who made that") || cleanEng.contains("who made him")
+        ) return true
+
+        return false
     }
 
     fun getLanguageSpecificCreatorReply(rawPrompt: String, targetLang: String, isLatinScript: Boolean): String {
         val low = rawPrompt.lowercase().trim()
-        val isBengali = targetLang.startsWith("bn", ignoreCase = true) ||
+        val hasBen = hasBengaliScript(rawPrompt)
+        val hasDev = hasDevanagariScript(rawPrompt)
+
+        // Rohit query
+        if (low.contains("rohit kaun") || low.contains("rohit ke") || low.contains("rohit kon") ||
+            low.contains("who is rohit") || low.contains("রোহিত কে") || low.contains("रोहित कौन")
+        ) {
+            val isBengali = hasBen || targetLang.startsWith("bn", ignoreCase = true) || low.contains("ke") || low.contains("kon")
+            return when {
+                isBengali -> {
+                    if (isLatinScript && !hasBen) "Rohit amar creator ebong developer jini amake baniechen."
+                    else "রোহিত হলেন আমার নির্মাতা এবং ডেভেলপার যিনি আমাকে তৈরি করেছেন।"
+                }
+                else -> {
+                    if (isLatinScript && !hasDev) "Rohit mere creator aur developer hain jinhone mujhe banaya hai."
+                    else "रोहित मेरे निर्माता और डेवलपर हैं जिन्होंने मुझे बनाया है।"
+                }
+            }
+        }
+
+        // Who are you / identity query
+        if (low.contains("tum kaun ho") || low.contains("aap kaun ho") || low.contains("tumi ke") ||
+            low.contains("apni ke") || low.contains("তুমি কে") || low.contains("আপনি কে") ||
+            low.contains("तुम कौन") || low.contains("आप कौन") || low.contains("who are you")
+        ) {
+            val isBengali = hasBen || targetLang.startsWith("bn", ignoreCase = true) || low.contains("tumi") || low.contains("apni")
+            return when {
+                isBengali -> {
+                    if (isLatinScript && !hasBen) "Ami Gemo AI, amake Rohit baniyeche."
+                    else "আমি Gemo AI, আমাকে রোহিত বানিয়েছে।"
+                }
+                hasDev || targetLang.startsWith("hi", ignoreCase = true) || low.contains("kaun") -> {
+                    if (isLatinScript && !hasDev) "Main Gemo AI hoon, mujhe Rohit ne banaya hai."
+                    else "मैं Gemo AI हूँ, मुझे रोहित ने बनाया है।"
+                }
+                else -> "I am Gemo AI, created by Rohit."
+            }
+        }
+
+        // Creator query ("usse kisne banaya", "tumhe kisne banaya", "tomake ke baniyeche", etc.)
+        val isBengali = hasBen || targetLang.startsWith("bn", ignoreCase = true) ||
                 low.contains("baniyeche") || low.contains("banieche") || low.contains("tomake") ||
                 low.contains("tumake") || low.contains("toiri") || low.contains("বানিয়ে") ||
-                low.contains("তোমাকে") || low.contains("তৈরি")
-        val isHindi = targetLang.startsWith("hi", ignoreCase = true) ||
-                low.contains("banaya") || low.contains("tumhe") || low.contains("kisne") ||
-                low.contains("apko") || low.contains("aapko") || low.contains("बनाया") || low.contains("किसने")
+                low.contains("তোমাকে") || low.contains("তৈরি") || low.contains("eita") || low.contains("eta")
+        val isHindi = hasDev || targetLang.startsWith("hi", ignoreCase = true) ||
+                low.contains("banaya") || low.contains("baniya") || low.contains("banya") ||
+                low.contains("tumhe") || low.contains("kisne") || low.contains("apko") ||
+                low.contains("aapko") || low.contains("usse") || low.contains("isse") ||
+                low.contains("बनाया") || low.contains("किसने")
+
+        val refersToIt = Regex("(?i)\\b(?:usse|use|isse|isko|usko|ye|yeh|eta|eita|oita|ota)\\b").containsMatchIn(low) ||
+                low.contains("এটা") || low.contains("এটি") || low.contains("ওটা") || low.contains("ওটি") ||
+                low.contains("इसे") || low.contains("इसको") || low.contains("उसको") || low.contains("उसने")
 
         return when {
             isBengali -> {
-                if (isLatinScript) "Amake Rohit baniyeche." else "আমাকে রোহিত বানিয়েছে।"
+                if (refersToIt) {
+                    if (isLatinScript && !hasBen) "Eta Rohit baniyeche." else "এটা রোহিত বানিয়েছে।"
+                } else {
+                    if (isLatinScript && !hasBen) "Amake Rohit baniyeche." else "আমাকে রোহিত বানিয়েছে।"
+                }
             }
-            isHindi -> {
-                if (isLatinScript) "Mujhe Rohit ne banaya hai." else "मुझे रोहित ने बनाया है।"
+            isHindi || !targetLang.startsWith("en", ignoreCase = true) -> {
+                if (refersToIt) {
+                    if (isLatinScript && !hasDev) "Isse Rohit ne banaya hai." else "इसे रोहित ने बनाया है।"
+                } else {
+                    if (isLatinScript && !hasDev) "Mujhe Rohit ne banaya hai." else "मुझे रोहित ने बनाया है।"
+                }
             }
             else -> {
-                "Rohit made me."
+                if (refersToIt) "Rohit made this." else "Rohit made me."
             }
         }
     }
@@ -496,38 +691,18 @@ object TranslatorHelper {
     ): String {
         val companies = "Anthropic|Alibaba Cloud|Alibaba|OpenAI|Google|Meta|Mistral|DeepSeek|Microsoft|Baidu"
 
-        // 1. Scrub model attribution phrases ONLY (never bare company names in factual sentences!)
-        var cleaned = rawAiResponse
+        // 1. If user asked who made the AI or asked identity / creator:
+        if (isCreatorOrIdentityQuery(rawPrompt, englishPrompt)) {
+            return getLanguageSpecificCreatorReply(rawPrompt, targetLang, isLatinScript)
+        }
+
+        // 2. Scrub competitor attribution phrases
+        val cleaned = rawAiResponse
             .replace(Regex("(?i)\\b(?:created|developed|trained|built|made|fine-tuned)\\s+by\\s+(?:$companies)\\b"), "created by Rohit")
             .replace(Regex("(?i)\\b(?:$companies)\\s+(?:developed|created|trained|made|built|programmed)\\s+(?:me|this model|this ai|gemo ai)\\b"), "Rohit made me")
             .replace(Regex("(?i)\\b(?:I am|I'm|As an AI|I was|This model was|This AI was)\\s+(?:an? \\w+ )*(?:created|developed|trained|built|made)\\s+by\\s+(?:$companies)\\b"), "I am an AI created by Rohit")
             .replace(Regex("(?i)\\b(?:large language model|language model),?\\s+(?:trained|developed|created)\\s+by\\s+(?:$companies)\\b"), "large language model, created by Rohit")
             .replace(Regex("(?i)\\b(?:trained|developed|created)\\s+by\\s+(?:$companies)\\b"), "created by Rohit")
-
-        // 2. If user asked who made the AI or asked identity:
-        if (isCreatorOrIdentityQuery(rawPrompt, englishPrompt)) {
-            val cleanEng = englishPrompt.lowercase().replace(Regex("[?!.,;:_~`'\"-]"), "").trim()
-            val isPureIdentity = cleanEng in listOf(
-                "who made you", "who make you", "who created you", "who create you",
-                "who is your creator", "who is your maker", "who built you",
-                "who developed you", "who is your developer", "who designed you",
-                "who programmed you", "who founded you", "who invented you",
-                "kisne banaya", "tumhe kisne banaya", "apko kisne banaya", "aapko kisne banaya",
-                "kisne banaya tumhe", "tomake ke baniyeche", "tumake ke baniyeche",
-                "apnake ke baniyeche", "tumi kar toiri"
-            )
-
-            val creatorReply = getLanguageSpecificCreatorReply(rawPrompt, targetLang, isLatinScript)
-
-            if (isPureIdentity || cleaned.isBlank() || cleaned.length < 25) {
-                return creatorReply
-            } else {
-                // Compound question: ensure creator statement is present first
-                if (!cleaned.contains("Rohit", ignoreCase = true)) {
-                    return "$creatorReply\n\n$cleaned"
-                }
-            }
-        }
 
         return cleaned
     }

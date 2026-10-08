@@ -6,7 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.model.ChatMessage
 import com.example.data.model.ConnectionStatus
 import com.example.data.model.Conversation
+import com.example.data.model.LlmModelOption
 import com.example.data.model.LlmSettings
+import com.example.data.model.ModelSwitchResponse
 import com.example.data.repository.ChatRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -29,7 +31,11 @@ data class ChatUiState(
     val showModelSelector: Boolean = false,
     val showSettingsDialog: Boolean = false,
     val showRenameDialog: Boolean = false,
-    val conversationToRename: Conversation? = null
+    val conversationToRename: Conversation? = null,
+    val activeGgufModel: String = "",
+    val modelSwitchResponse: ModelSwitchResponse? = null,
+    val isModelSwitching: Boolean = false,
+    val models: List<LlmModelOption> = emptyList()
 ) {
     val filteredConversations: List<Conversation>
         get() = if (searchQuery.isBlank()) {
@@ -52,37 +58,51 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _showSettingsDialog = MutableStateFlow(false)
     private val _showRenameDialog = MutableStateFlow(false)
     private val _conversationToRename = MutableStateFlow<Conversation?>(null)
+    private val _dismissedModelSwitchTime = MutableStateFlow<Long>(0L)
 
     val uiState: StateFlow<ChatUiState> = combine(
-        repository.conversations,
-        repository.currentConversation,
-        repository.messages,
-        repository.connectionStatus,
-        repository.isConnectedToRtdb,
-        repository.settings,
-        _inputText,
-        _searchQuery,
-        _errorMessage,
-        _showModelSelector,
-        _showSettingsDialog,
-        _showRenameDialog,
-        _conversationToRename
-    ) { params ->
-        val conversations = params[0] as List<Conversation>
-        val currentConv = params[1] as? Conversation
-        val messages = params[2] as List<ChatMessage>
-        val connStatus = params[3] as ConnectionStatus
-        val isConnected = params[4] as Boolean
-        val settings = params[5] as LlmSettings
-        val inputText = params[6] as String
-        val searchQuery = params[7] as String
-        val errorMsg = params[8] as? String
-        val showModel = params[9] as Boolean
-        val showSettings = params[10] as Boolean
-        val showRename = params[11] as Boolean
-        val convToRename = params[12] as? Conversation
+        combine(
+            repository.conversations,
+            repository.currentConversation,
+            repository.messages,
+            repository.connectionStatus,
+            repository.isConnectedToRtdb
+        ) { conversations, currentConv, messages, connStatus, isConnected ->
+            tuple5(conversations, currentConv, messages, connStatus, isConnected)
+        },
+        combine(
+            repository.settings,
+            repository.activeModelFromRtdb,
+            repository.modelSwitchResponse,
+            repository.isModelSwitching,
+            repository.userModels
+        ) { settings, activeRtdbModel, modelResponse, isSwitching, models ->
+            tuple5(settings, activeRtdbModel, modelResponse, isSwitching, models)
+        },
+        combine(
+            _inputText,
+            _searchQuery,
+            _errorMessage,
+            _showModelSelector,
+            _showSettingsDialog
+        ) { inputText, searchQuery, errorMsg, showModel, showSettings ->
+            tuple5(inputText, searchQuery, errorMsg, showModel, showSettings)
+        },
+        combine(
+            _showRenameDialog,
+            _conversationToRename,
+            _dismissedModelSwitchTime
+        ) { showRename, convToRename, dismissedTime ->
+            Triple(showRename, convToRename, dismissedTime)
+        }
+    ) { (conversations, currentConv, messages, connStatus, isConnected),
+        (settings, activeRtdbModel, modelResponse, isSwitching, models),
+        (inputText, searchQuery, errorMsg, showModel, showSettings),
+        (showRename, convToRename, dismissedTime) ->
 
         val isGenerating = messages.any { it.isGenerating } || connStatus == ConnectionStatus.AI_GENERATING
+        val currentActiveModel = activeRtdbModel ?: currentConv?.model ?: settings.modelName
+        val visibleModelResponse = if (modelResponse != null && modelResponse.timestamp > dismissedTime) modelResponse else null
 
         ChatUiState(
             conversations = conversations,
@@ -98,7 +118,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             showModelSelector = showModel,
             showSettingsDialog = showSettings,
             showRenameDialog = showRename,
-            conversationToRename = convToRename
+            conversationToRename = convToRename,
+            activeGgufModel = currentActiveModel,
+            modelSwitchResponse = visibleModelResponse,
+            isModelSwitching = isSwitching,
+            models = models
         )
     }.stateIn(
         scope = viewModelScope,
@@ -179,6 +203,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _showModelSelector.value = false
     }
 
+    fun addModel(modelInput: String) {
+        val trimmed = modelInput.trim()
+        if (trimmed.isNotEmpty()) {
+            repository.addModel(trimmed)
+        }
+    }
+
+    fun deleteModel(ggufFilename: String) {
+        repository.deleteModel(ggufFilename)
+    }
+
+    fun dismissModelSwitchResponse() {
+        _dismissedModelSwitchTime.value = System.currentTimeMillis()
+    }
+
     fun setShowSettingsDialog(show: Boolean) {
         _showSettingsDialog.value = show
     }
@@ -199,4 +238,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun dismissError() {
         _errorMessage.value = null
     }
+
+    private fun <A, B, C, D, E> tuple5(a: A, b: B, c: C, d: D, e: E) = Tuple5(a, b, c, d, e)
+    private data class Tuple5<A, B, C, D, E>(val a: A, val b: B, val c: C, val d: D, val e: E)
 }

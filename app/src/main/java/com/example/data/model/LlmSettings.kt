@@ -1,9 +1,17 @@
 package com.example.data.model
 
+data class ModelSwitchResponse(
+    val success: Boolean = false,
+    val requested: String = "",
+    val active: String = "",
+    val message: String = "",
+    val timestamp: Long = System.currentTimeMillis()
+)
+
 data class LlmSettings(
     val firebaseUrl: String = DEFAULT_FIREBASE_URL,
-    val provider: String = "Gemma",
-    val modelName: String = "Gemma 2 9B",
+    val provider: String = "Custom",
+    val modelName: String = "qwen2.5-1.5b-instruct-q4_k_m.gguf",
     val themeMode: String = "SYSTEM", // "SYSTEM", "DARK", "LIGHT"
     val responseTimeoutSeconds: Int = 45,
     val maxTokens: Int = 2048,
@@ -12,25 +20,48 @@ data class LlmSettings(
     companion object {
         const val DEFAULT_FIREBASE_URL = "https://ussr-error-404-default-rtdb.firebaseio.com"
 
-        val AVAILABLE_MODELS = listOf(
-            LlmModelOption("Qwen", "Qwen 0.5B Q4", "Ultra-fast lightweight quantized model (0.5B Q4)"),
-            LlmModelOption("Qwen", "Qwen 2.5 0.5B", "Compact high-speed edge reasoning model"),
-            LlmModelOption("Qwen", "Qwen 2.5 72B", "Leading open-weights multilingual LLM"),
-            LlmModelOption("Qwen", "Qwen 2.5 Coder", "Optimized for programming & code review"),
-            LlmModelOption("Gemma", "Gemma 2 9B", "Google lightweight state-of-the-art model"),
-            LlmModelOption("Gemma", "Gemma 2 27B", "High-accuracy Google open model"),
-            LlmModelOption("Llama", "Llama 3.3 70B", "Flagship open LLM for deep reasoning"),
-            LlmModelOption("Llama", "Llama 3.1 8B", "Fast and responsive conversational model"),
-            LlmModelOption("Mistral", "Mistral Large", "Flagship European intelligence reasoning"),
-            LlmModelOption("Mistral", "Mistral Nemo", "Compact high-efficiency assistant"),
-            LlmModelOption("DeepSeek", "DeepSeek V3", "Advanced reasoning and dialogue"),
-            LlmModelOption("DeepSeek", "DeepSeek R1", "Chain of thought logic and coding")
-        )
+        // All pre-added models removed as requested. Models are now dynamically added and saved by the user.
+        val AVAILABLE_MODELS: List<LlmModelOption> = emptyList()
+
+        fun ensureGgufFilename(nameOrFilename: String): String {
+            val clean = nameOrFilename.trim()
+            if (clean.isEmpty()) return "model.gguf"
+            if (clean.endsWith(".gguf", ignoreCase = true)) {
+                return clean
+            }
+            if (clean.equals("Qwen 2.5 1.5B Instruct", ignoreCase = true)) {
+                return "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+            }
+            return "${clean.lowercase().replace(" ", "-")}.gguf"
+        }
+
+        fun detectProvider(filenameOrName: String): String {
+            val low = filenameOrName.lowercase()
+            return when {
+                low.contains("qwen") -> "Qwen"
+                low.contains("llama") -> "Llama"
+                low.contains("gemma") -> "Gemma"
+                low.contains("deepseek") -> "DeepSeek"
+                low.contains("mistral") -> "Mistral"
+                low.contains("phi") -> "Phi"
+                else -> "Custom"
+            }
+        }
+
+        fun getDisplayName(filenameOrName: String): String {
+            val clean = filenameOrName.trim()
+            return if (clean.endsWith(".gguf", ignoreCase = true)) {
+                clean.removeSuffix(".gguf")
+            } else {
+                clean
+            }
+        }
     }
 }
 
 data class LlmModelOption(
     val provider: String,
     val modelName: String,
-    val description: String
+    val ggufFilename: String,
+    val description: String = ""
 )

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -95,19 +96,30 @@ fun ChatTopBar(
                     // Model Badge
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.5f)),
                         modifier = Modifier.testTag("model_selector_badge")
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(StatusConnected)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
                             Text(
                                 text = currentModelName,
                                 style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.Medium,
+                                    fontWeight = FontWeight.SemiBold,
                                     fontSize = 11.sp
                                 ),
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 140.dp),
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                             Icon(

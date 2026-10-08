@@ -27,13 +27,17 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -42,9 +46,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.ConnectionStatus
 import com.example.ui.components.ChatInputBar
@@ -123,9 +129,11 @@ fun ChatScreen(
                 .testTag("chat_screen"),
             contentWindowInsets = WindowInsets.statusBars,
             topBar = {
+                val activeModelName = uiState.activeGgufModel.ifEmpty {
+                    uiState.currentConversation?.model?.ifEmpty { uiState.settings.modelName } ?: uiState.settings.modelName
+                }
                 ChatTopBar(
-                    currentModelName = uiState.currentConversation?.model?.ifEmpty { uiState.settings.modelName }
-                        ?: uiState.settings.modelName,
+                    currentModelName = activeModelName,
                     connectionStatus = uiState.connectionStatus,
                     onOpenDrawer = { scope.launch { drawerState.open() } },
                     onOpenModelSelector = { viewModel.setShowModelSelector(true) },
@@ -140,6 +148,109 @@ fun ChatScreen(
                     .fillMaxSize()
                     .padding(paddingValues)
             ) {
+                // Model switch response notification banner (/model/response)
+                AnimatedVisibility(
+                    visible = uiState.modelSwitchResponse != null,
+                    enter = expandVertically(),
+                    exit = shrinkVertically()
+                ) {
+                    uiState.modelSwitchResponse?.let { resp ->
+                        val isSuccess = resp.success
+                        val bgColor = if (isSuccess) Color(0xFF1E3A24) else Color(0xFF3E1D1D)
+                        val iconColor = if (isSuccess) Color(0xFF4CAF50) else Color(0xFFEF5350)
+                        val textColor = if (isSuccess) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
+
+                        Surface(
+                            color = bgColor,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (isSuccess) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = iconColor,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (isSuccess) {
+                                        "${resp.message.ifEmpty { "Model switched successfully." }} (${resp.active})"
+                                    } else {
+                                        "${resp.message} (Active: ${resp.active})"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                                    color = textColor,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = viewModel::dismissModelSwitchResponse,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Dismiss",
+                                        tint = textColor.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // General error banner (e.g. sending message during model switch or error)
+                AnimatedVisibility(
+                    visible = !uiState.errorMessage.isNullOrBlank(),
+                    enter = expandVertically(),
+                    exit = shrinkVertically()
+                ) {
+                    uiState.errorMessage?.let { errText ->
+                        Surface(
+                            color = Color(0xFF3E1D1D),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = Color(0xFFEF5350),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = errText,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                                    color = Color(0xFFFFEBEE),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = viewModel::dismissError,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Dismiss",
+                                        tint = Color(0xFFFFEBEE).copy(alpha = 0.7f),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Server unavailable or error banner
                 AnimatedVisibility(
                     visible = uiState.connectionStatus == ConnectionStatus.SERVER_UNAVAILABLE,
@@ -184,8 +295,10 @@ fun ChatScreen(
                 ) {
                     if (uiState.messages.isEmpty()) {
                         EmptyChatWelcome(
-                            modelName = uiState.currentConversation?.model?.ifEmpty { uiState.settings.modelName }
-                                ?: uiState.settings.modelName,
+                            modelName = uiState.activeGgufModel.ifEmpty {
+                                uiState.currentConversation?.model?.ifEmpty { uiState.settings.modelName }
+                                    ?: uiState.settings.modelName
+                            },
                             onSelectPrompt = { promptText ->
                                 viewModel.onInputTextChanged(promptText)
                                 viewModel.sendMessage()
@@ -237,11 +350,22 @@ fun ChatScreen(
 
     // Model Selector Sheet
     if (uiState.showModelSelector) {
+        val currentGguf = uiState.activeGgufModel.ifEmpty {
+            uiState.currentConversation?.model?.ifEmpty { uiState.settings.modelName } ?: uiState.settings.modelName
+        }
         ModelSelectorSheet(
-            selectedModel = uiState.currentConversation?.model?.ifEmpty { uiState.settings.modelName }
-                ?: uiState.settings.modelName,
+            selectedModel = currentGguf,
+            models = uiState.models,
+            isModelSwitching = uiState.isModelSwitching,
+            modelSwitchResponse = uiState.modelSwitchResponse,
             onModelSelected = { modelName, provider ->
                 viewModel.selectModel(modelName, provider)
+            },
+            onAddModel = { modelInput ->
+                viewModel.addModel(modelInput)
+            },
+            onDeleteModel = { ggufFilename ->
+                viewModel.deleteModel(ggufFilename)
             },
             onDismiss = { viewModel.setShowModelSelector(false) }
         )

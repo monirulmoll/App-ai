@@ -6,6 +6,7 @@ import com.example.data.local.LocalChatPreferences
 import com.example.data.model.ChatMessage
 import com.example.data.model.ConnectionStatus
 import com.example.data.model.Conversation
+import com.example.data.model.LlmModelOption
 import com.example.data.model.LlmSettings
 import com.example.data.translator.TranslatorHelper
 import kotlinx.coroutines.CoroutineScope
@@ -45,6 +46,12 @@ class ChatRepository(context: Context) {
 
     val connectionStatus: StateFlow<ConnectionStatus> = rtdbManager.connectionStatus
     val isConnectedToRtdb: StateFlow<Boolean> = rtdbManager.isConnectedToRtdb
+    val activeModelFromRtdb: StateFlow<String?> = rtdbManager.activeModelFromRtdb
+    val modelSwitchResponse: StateFlow<com.example.data.model.ModelSwitchResponse?> = rtdbManager.modelSwitchResponse
+    val isModelSwitching: StateFlow<Boolean> = rtdbManager.isModelSwitching
+
+    private val _userModels = MutableStateFlow<List<LlmModelOption>>(prefs.getSavedModels())
+    val userModels: StateFlow<List<LlmModelOption>> = _userModels.asStateFlow()
 
     // Track active request ID currently awaiting AI response
     private var pendingRequestId: String? = null
@@ -69,32 +76,78 @@ class ChatRepository(context: Context) {
             createNewConversation()
         }
 
-        // Publish current active model to RTDB
-        rtdbManager.publishActiveModel(
-            currentSettings.modelName,
-            currentSettings.provider,
-            _currentConversation.value?.id
-        )
+        // Listen for active model updates written by backend to "/model"
+        scope.launch {
+            rtdbManager.activeModelFromRtdb.collect { activeModel ->
+                if (!activeModel.isNullOrBlank()) {
+                    val updatedSettings = _settings.value.copy(modelName = activeModel)
+                    _settings.value = updatedSettings
+                    prefs.saveSettings(updatedSettings)
+
+                    val currentConvId = _currentConversation.value?.id
+                    if (currentConvId != null) {
+                        val updatedList = _conversations.value.map {
+                            if (it.id == currentConvId) it.copy(model = activeModel) else it
+                        }
+                        _conversations.value = updatedList
+                        prefs.saveConversations(updatedList)
+                        _currentConversation.value = updatedList.find { it.id == currentConvId }
+                    }
+                }
+            }
+        }
+
+        // Send initial model switch request to "/model/request"
+        val initialGguf = LlmSettings.ensureGgufFilename(currentSettings.modelName)
+        rtdbManager.requestModelSwitch(initialGguf)
     }
 
     fun getSettings(): LlmSettings = _settings.value
 
     fun selectModel(modelName: String, provider: String) {
-        val updated = _settings.value.copy(modelName = modelName, provider = provider)
+        val exactGguf = LlmSettings.ensureGgufFilename(modelName)
+        val updated = _settings.value.copy(modelName = exactGguf, provider = provider)
         _settings.value = updated
         prefs.saveSettings(updated)
 
-        val currentConvId = _currentConversation.value?.id
-        rtdbManager.publishActiveModel(modelName, provider, currentConvId)
+        // Write selected model's exact .gguf filename to "/model/request"
+        rtdbManager.requestModelSwitch(exactGguf)
 
+        val currentConvId = _currentConversation.value?.id
         if (currentConvId != null) {
             val updatedList = _conversations.value.map {
-                if (it.id == currentConvId) it.copy(model = modelName) else it
+                if (it.id == currentConvId) it.copy(model = exactGguf) else it
             }
             _conversations.value = updatedList
             prefs.saveConversations(updatedList)
             _currentConversation.value = updatedList.find { it.id == currentConvId }
         }
+    }
+
+    fun addModel(rawInput: String, customProvider: String = ""): LlmModelOption {
+        val exactGguf = LlmSettings.ensureGgufFilename(rawInput)
+        val provider = if (customProvider.isNotBlank()) customProvider else LlmSettings.detectProvider(exactGguf)
+        val displayName = LlmSettings.getDisplayName(exactGguf)
+        val newOption = LlmModelOption(
+            provider = provider,
+            modelName = displayName,
+            ggufFilename = exactGguf,
+            description = "Exact: $exactGguf"
+        )
+        val currentList = _userModels.value
+        val updated = currentList.filterNot { it.ggufFilename.equals(exactGguf, ignoreCase = true) } + newOption
+        _userModels.value = updated
+        prefs.saveSavedModels(updated)
+
+        // Select and write to /model/request
+        selectModel(exactGguf, provider)
+        return newOption
+    }
+
+    fun deleteModel(ggufFilename: String) {
+        val updated = _userModels.value.filterNot { it.ggufFilename.equals(ggufFilename, ignoreCase = true) }
+        _userModels.value = updated
+        prefs.saveSavedModels(updated)
     }
 
     fun updateSettings(newSettings: LlmSettings) {
@@ -239,28 +292,15 @@ class ChatRepository(context: Context) {
                         isLatinScript = isLatin
                     )
 
-                    // 2. If target language is non-English, translate back into user language
-                    val finalDisplayText = if (targetLang != "en" && targetLang != "auto") {
-                        if (TranslatorHelper.isCreatorOrIdentityQuery(rawPrompt, engPrompt)) {
-                            val lowRaw = rawPrompt.lowercase()
-                            if (targetLang.startsWith("hi") || targetLang.startsWith("bn") ||
-                                lowRaw.contains("banaya") || lowRaw.contains("baniyeche") || lowRaw.contains("banieche") ||
-                                lowRaw.contains("toiri") || lowRaw.contains("বানিয়ে")) {
-                                formatted
-                            } else {
-                                TranslatorHelper.translateFromEnglishToUserLang(
-                                    englishText = formatted,
-                                    targetLang = targetLang,
-                                    preferRomanized = isLatin
-                                )
-                            }
-                        } else {
-                            TranslatorHelper.translateFromEnglishToUserLang(
-                                englishText = formatted,
-                                targetLang = targetLang,
-                                preferRomanized = isLatin
-                            )
-                        }
+                    // 2. If it's a creator or identity query, formatted is ALREADY in the exact user language
+                    val finalDisplayText = if (TranslatorHelper.isCreatorOrIdentityQuery(rawPrompt, engPrompt)) {
+                        formatted
+                    } else if (targetLang != "en" && targetLang != "auto") {
+                        TranslatorHelper.translateFromEnglishToUserLang(
+                            englishText = formatted,
+                            targetLang = targetLang,
+                            preferRomanized = isLatin
+                        )
                     } else {
                         formatted
                     }
@@ -307,9 +347,56 @@ class ChatRepository(context: Context) {
         if (trimmed.isEmpty()) return
 
         val conv = _currentConversation.value ?: createNewConversation()
+        val chosenModel = overrideModel ?: conv.model.ifEmpty { _settings.value.modelName }
+
+        // Check if model switch is currently in progress or failed
+        val isSwitching = rtdbManager.isModelSwitching.value
+        val lastSwitch = rtdbManager.modelSwitchResponse.value
+
+        if (isSwitching) {
+            val errorMsg = "Model switch is in progress. Please wait for server to finish switching models."
+            val userMsgId = "msg_user_${System.currentTimeMillis()}"
+            val errMessage = ChatMessage(
+                messageId = userMsgId,
+                conversationId = conv.id,
+                sender = "user",
+                text = trimmed,
+                originalText = trimmed,
+                timestamp = System.currentTimeMillis(),
+                status = "error",
+                errorMessage = errorMsg,
+                model = chosenModel
+            )
+            val currentList = _messages.value.toMutableList()
+            currentList.add(errMessage)
+            _messages.value = currentList
+            prefs.saveMessages(conv.id, currentList)
+            return
+        }
+
+        if (lastSwitch != null && !lastSwitch.success && chosenModel.equals(lastSwitch.requested, ignoreCase = true)) {
+            val errorMsg = "Cannot send message: Model '${lastSwitch.requested}' is not available on server (${lastSwitch.message})."
+            val userMsgId = "msg_user_${System.currentTimeMillis()}"
+            val errMessage = ChatMessage(
+                messageId = userMsgId,
+                conversationId = conv.id,
+                sender = "user",
+                text = trimmed,
+                originalText = trimmed,
+                timestamp = System.currentTimeMillis(),
+                status = "error",
+                errorMessage = errorMsg,
+                model = chosenModel
+            )
+            val currentList = _messages.value.toMutableList()
+            currentList.add(errMessage)
+            _messages.value = currentList
+            prefs.saveMessages(conv.id, currentList)
+            return
+        }
+
         val reqId = UUID.randomUUID().toString()
         val userMsgId = "msg_user_${System.currentTimeMillis()}"
-        val chosenModel = overrideModel ?: conv.model.ifEmpty { _settings.value.modelName }
 
         val userMessage = ChatMessage(
             messageId = userMsgId,
@@ -467,10 +554,14 @@ class ChatRepository(context: Context) {
 
     fun stopGeneration() {
         rtdbManager.cancelResponseTimeout()
-        pendingRequestId?.let { reqId ->
-            // Mark any generating AI message as stopped
+        val currentConvId = _currentConversation.value?.id ?: ""
+        val reqId = pendingRequestId ?: ""
+
+        // Notify server that user pressed stop and await stop confirmation
+        rtdbManager.requestStopGeneration(currentConvId, reqId) { success ->
+            // Process stop confirmation from server
             val currentList = _messages.value.toMutableList()
-            val aiIdx = currentList.indexOfFirst { it.requestId == reqId && it.isAi && it.isGenerating }
+            val aiIdx = currentList.indexOfFirst { (it.requestId == reqId || reqId.isEmpty()) && it.isAi && it.isGenerating }
             if (aiIdx >= 0) {
                 val current = currentList[aiIdx]
                 val updatedText = if (current.text.isEmpty()) "Generation stopped by user." else current.text
@@ -480,9 +571,9 @@ class ChatRepository(context: Context) {
                     prefs.saveMessages(conv.id, currentList)
                 }
             }
+            pendingRequestId = null
+            rtdbManager.setConnectionStatus(ConnectionStatus.CONNECTED)
         }
-        pendingRequestId = null
-        rtdbManager.setConnectionStatus(ConnectionStatus.CONNECTED)
     }
 
     private fun handleAiResponseTimeout(reqId: String, aiMsgId: String) {

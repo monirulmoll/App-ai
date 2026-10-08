@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.example.data.model.ChatMessage
 import com.example.data.model.Conversation
+import com.example.data.model.LlmModelOption
 import com.example.data.model.LlmSettings
 import org.json.JSONArray
 import org.json.JSONObject
@@ -21,24 +22,28 @@ class LocalChatPreferences(context: Context) {
         private const val KEY_ACTIVE_CONV = "active_conversation_id"
         private const val KEY_CONVERSATIONS = "conversations_json"
         private const val PREFIX_MESSAGES = "conv_messages_"
+        private const val KEY_SAVED_MODELS = "saved_user_models_json"
     }
 
     fun getSettings(): LlmSettings {
+        val rawModel = prefs.getString(KEY_MODEL_NAME, "qwen2.5-1.5b-instruct-q4_k_m.gguf") ?: "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+        val exactGguf = LlmSettings.ensureGgufFilename(rawModel)
         return LlmSettings(
             firebaseUrl = prefs.getString(KEY_FIREBASE_URL, LlmSettings.DEFAULT_FIREBASE_URL)
                 ?: LlmSettings.DEFAULT_FIREBASE_URL,
-            provider = prefs.getString(KEY_PROVIDER, "Gemma") ?: "Gemma",
-            modelName = prefs.getString(KEY_MODEL_NAME, "Gemma 2 9B") ?: "Gemma 2 9B",
+            provider = prefs.getString(KEY_PROVIDER, "Qwen") ?: "Qwen",
+            modelName = exactGguf,
             themeMode = prefs.getString(KEY_THEME, "SYSTEM") ?: "SYSTEM",
             responseTimeoutSeconds = prefs.getInt(KEY_TIMEOUT, 45)
         )
     }
 
     fun saveSettings(settings: LlmSettings) {
+        val exactGguf = LlmSettings.ensureGgufFilename(settings.modelName)
         prefs.edit()
             .putString(KEY_FIREBASE_URL, settings.firebaseUrl)
             .putString(KEY_PROVIDER, settings.provider)
-            .putString(KEY_MODEL_NAME, settings.modelName)
+            .putString(KEY_MODEL_NAME, exactGguf)
             .putString(KEY_THEME, settings.themeMode)
             .putInt(KEY_TIMEOUT, settings.responseTimeoutSeconds)
             .apply()
@@ -65,7 +70,7 @@ class LocalChatPreferences(context: Context) {
                         title = obj.optString("title", "Chat"),
                         createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
                         updatedAt = obj.optLong("updatedAt", System.currentTimeMillis()),
-                        model = obj.optString("model", "Gemma 2 9B"),
+                        model = LlmSettings.ensureGgufFilename(obj.optString("model", "qwen2.5-1.5b-instruct-q4_k_m.gguf")),
                         lastMessage = obj.optString("lastMessage", "")
                     )
                 )
@@ -156,5 +161,51 @@ class LocalChatPreferences(context: Context) {
 
     fun deleteConversationData(conversationId: String) {
         prefs.edit().remove(PREFIX_MESSAGES + conversationId).apply()
+    }
+
+    fun getSavedModels(): List<LlmModelOption> {
+        val jsonStr = prefs.getString(KEY_SAVED_MODELS, null) ?: return emptyList()
+        return try {
+            val array = JSONArray(jsonStr)
+            val list = mutableListOf<LlmModelOption>()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                val rawFilename = obj.optString("ggufFilename", "")
+                if (rawFilename.isNotBlank()) {
+                    val exactGguf = LlmSettings.ensureGgufFilename(rawFilename)
+                    val modelName = obj.optString("modelName", LlmSettings.getDisplayName(exactGguf))
+                    val provider = obj.optString("provider", LlmSettings.detectProvider(exactGguf))
+                    val desc = obj.optString("description", "")
+                    list.add(
+                        LlmModelOption(
+                            provider = provider,
+                            modelName = modelName,
+                            ggufFilename = exactGguf,
+                            description = desc
+                        )
+                    )
+                }
+            }
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun saveSavedModels(models: List<LlmModelOption>) {
+        try {
+            val array = JSONArray()
+            for (m in models) {
+                val obj = JSONObject().apply {
+                    put("provider", m.provider)
+                    put("modelName", m.modelName)
+                    put("ggufFilename", m.ggufFilename)
+                    put("description", m.description)
+                }
+                array.put(obj)
+            }
+            prefs.edit().putString(KEY_SAVED_MODELS, array.toString()).apply()
+        } catch (_: Exception) {
+        }
     }
 }
