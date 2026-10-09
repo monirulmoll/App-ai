@@ -6,6 +6,8 @@ import com.example.data.model.ChatMessage
 import com.example.data.model.ConnectionStatus
 import com.example.data.model.LlmSettings
 import com.example.data.model.ModelSwitchResponse
+import com.example.data.model.UserMemory
+import com.example.data.model.WorkspaceFile
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.database.ChildEventListener
@@ -70,6 +72,14 @@ class FirebaseRtdbManager(private val context: Context) {
 
     fun initialize(url: String) {
         val sanitizedUrl = url.trim().removeSuffix("/")
+        if (sanitizedUrl.isBlank()) {
+            currentUrl = ""
+            databaseInstance = null
+            _connectionStatus.value = ConnectionStatus.SERVER_UNAVAILABLE
+            _isConnectedToRtdb.value = false
+            return
+        }
+
         if (sanitizedUrl == currentUrl && databaseInstance != null) {
             return
         }
@@ -156,11 +166,6 @@ class FirebaseRtdbManager(private val context: Context) {
         }
     }
 
-    /**
-     * Sets up real-time listeners for the new Model paths:
-     * 1. "/model" - Backend writes currently active model here: { "name": "exact.gguf" }
-     * 2. "/model/response" - Backend writes model switch result here: { "success": true, ... }
-     */
     private fun setupModelPathListeners(db: FirebaseDatabase) {
         try {
             activeModelListener?.let { db.getReference("model").removeEventListener(it) }
@@ -228,12 +233,6 @@ class FirebaseRtdbManager(private val context: Context) {
         responseRef.addValueEventListener(rListener)
     }
 
-    /**
-     * Writes model switch request to "/model/request":
-     * {
-     *   "name": "qwen2.5-1.5b-instruct-q4_k_m.gguf"
-     * }
-     */
     fun requestModelSwitch(ggufFilename: String, onComplete: ((Boolean) -> Unit)? = null) {
         val db = databaseInstance
         if (db == null) {
@@ -256,16 +255,6 @@ class FirebaseRtdbManager(private val context: Context) {
         }
     }
 
-    /**
-     * Sends stop generation signal to server and listens for confirmation.
-     * Paths:
-     * App writes stop request:
-     *   /conversations/{conversationId}/stop -> { "stop": true, "requestId": "...", "timestamp": ... }
-     *   /stop -> { "stop": true, "conversationId": "...", "requestId": "...", "timestamp": ... }
-     * Backend writes stop result:
-     *   /conversations/{conversationId}/stop/response -> { "success": true, "status": "stopped", "message": "stop success" }
-     *   /stop/response -> { "success": true, ... }
-     */
     fun requestStopGeneration(
         conversationId: String,
         requestId: String,
@@ -305,7 +294,7 @@ class FirebaseRtdbManager(private val context: Context) {
 
         // Safety fallback timer so UI is guaranteed to unblock
         scope.launch {
-            kotlinx.coroutines.delay(3500)
+            delay(3500)
             completeOnce(true)
         }
 
@@ -341,6 +330,11 @@ class FirebaseRtdbManager(private val context: Context) {
     }
 
     fun probeServerReachability(url: String = currentUrl) {
+        if (url.isBlank()) {
+            _connectionStatus.value = ConnectionStatus.SERVER_UNAVAILABLE
+            _isConnectedToRtdb.value = false
+            return
+        }
         scope.launch {
             try {
                 val testUrl = if (url.endsWith(".json")) url else "$url/.json?shallow=true"
@@ -379,10 +373,6 @@ class FirebaseRtdbManager(private val context: Context) {
         _connectionStatus.value = status
     }
 
-    /**
-     * Send user message to conversations/{conversationId}/messages/{messageId}
-     * IMPORTANT: Kept exactly as existing functionality.
-     */
     fun sendMessage(
         message: ChatMessage,
         onSuccess: () -> Unit,
@@ -427,6 +417,12 @@ class FirebaseRtdbManager(private val context: Context) {
                     convRef.child("lastPrompt").setValue(message.text)
                     convRef.child("model").setValue(message.model)
                     convRef.child("maker").setValue("Rohit")
+                    if (message.hasImage) {
+                        convRef.child("hasImage").setValue(true)
+                    }
+                    if (message.agentMode) {
+                        convRef.child("agentMode").setValue(true)
+                    }
                 } catch (_: Exception) {}
 
                 onSuccess()
@@ -434,10 +430,6 @@ class FirebaseRtdbManager(private val context: Context) {
         }
     }
 
-    /**
-     * Start listening for messages in conversationId
-     * IMPORTANT: Kept exactly as existing functionality.
-     */
     fun listenToConversation(
         conversationId: String,
         onMessageReceived: (ChatMessage) -> Unit,
@@ -541,9 +533,6 @@ class FirebaseRtdbManager(private val context: Context) {
             ?.removeValue { _, _ -> onComplete() } ?: onComplete()
     }
 
-    /**
-     * Requests model switch through "/model/request" and synchronizes conversation model metadata.
-     */
     fun publishActiveModel(modelName: String, provider: String, conversationId: String?) {
         val exactGguf = LlmSettings.ensureGgufFilename(modelName)
         requestModelSwitch(exactGguf)
@@ -555,5 +544,18 @@ class FirebaseRtdbManager(private val context: Context) {
                 .child("model")
                 .setValue(exactGguf)
         }
+    }
+
+    // Next-Gen additions: Workspace & Memory Sync to Firebase RTDB
+    fun syncWorkspaceFile(file: WorkspaceFile) {
+        val db = databaseInstance ?: return
+        val sanitized = file.filename.replace(".", "_")
+        db.getReference("workspace").child("files").child(sanitized).setValue(file.toMap())
+    }
+
+    fun syncMemories(memories: List<UserMemory>) {
+        val db = databaseInstance ?: return
+        val map = memories.associate { it.id to it.toMap() }
+        db.getReference("memory").child("active").setValue(map)
     }
 }

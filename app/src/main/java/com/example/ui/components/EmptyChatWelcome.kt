@@ -19,10 +19,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -46,12 +48,12 @@ import com.example.ui.theme.GeminiPurple
 data class PromptSuggestion(
     val title: String,
     val prompt: String,
-    val icon: ImageVector
+    val icon: ImageVector,
+    val category: String = "General"
 )
 
 @Composable
 fun EmptyChatWelcome(
-    modelName: String,
     onSelectPrompt: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -61,29 +63,40 @@ fun EmptyChatWelcome(
 
     val suggestions = listOf(
         PromptSuggestion(
-            title = "Introduction",
+            title = "Creator & Identity",
             prompt = "Who created you and what is your name?",
-            icon = Icons.Default.AutoAwesome
+            icon = Icons.Default.AutoAwesome,
+            category = "Identity"
         ),
         PromptSuggestion(
-            title = "Explain a concept",
-            prompt = "Explain quantum computing in simple terms with an analogy",
-            icon = Icons.Default.Lightbulb
+            title = "Code Workspace",
+            prompt = "Create a Python file in workspace with greeting functions",
+            icon = Icons.Default.Code,
+            category = "Coding"
         ),
         PromptSuggestion(
-            title = "Code assistant",
-            prompt = "Write a clean Kotlin coroutine function with Flow error handling",
-            icon = Icons.Default.Code
+            title = "Calculator & Tools",
+            prompt = "Calculate: (150 * 24) + sqrt(1024)",
+            icon = Icons.Default.Build,
+            category = "Agent Tools"
         ),
         PromptSuggestion(
-            title = "Brainstorm ideas",
-            prompt = "Brainstorm 5 innovative app ideas using real-time synchronization",
-            icon = Icons.Default.Psychology
+            title = "Image Generation",
+            prompt = "Generate an image of a futuristic neon cybernetic city at night",
+            icon = Icons.Default.Image,
+            category = "Creative"
         ),
         PromptSuggestion(
-            title = "Draft or refine",
-            prompt = "Draft a friendly, professional email thanking a mentor for their guidance",
-            icon = Icons.Default.Translate
+            title = "Concept Explanation",
+            prompt = "Explain quantum computing with an intuitive analogy",
+            icon = Icons.Default.Lightbulb,
+            category = "Learning"
+        ),
+        PromptSuggestion(
+            title = "AI Memory",
+            prompt = "Remember: My preferred development language is Kotlin with Jetpack Compose",
+            icon = Icons.Default.Psychology,
+            category = "Memory"
         )
     )
 
@@ -99,27 +112,26 @@ fun EmptyChatWelcome(
         // Glowing emblem
         Box(
             modifier = Modifier
-                .size(68.dp)
+                .size(76.dp)
                 .clip(CircleShape)
                 .background(sparkGradient),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Default.AutoAwesome,
-                contentDescription = "Gemo AI",
+                contentDescription = null,
                 tint = Color.White,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(40.dp)
             )
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(18.dp))
 
-        // Headline
         Text(
-            text = "Hello, I'm Gemo AI",
+            text = "Welcome to Gemo AI",
             style = MaterialTheme.typography.headlineMedium.copy(
                 fontWeight = FontWeight.Bold,
-                fontSize = 24.sp
+                fontSize = 26.sp
             ),
             color = MaterialTheme.colorScheme.onSurface,
             textAlign = TextAlign.Center
@@ -128,69 +140,72 @@ fun EmptyChatWelcome(
         Spacer(modifier = Modifier.height(6.dp))
 
         Text(
-            text = "Created by Rohit • Powered by $modelName via Firebase RTDB",
-            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 20.sp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 16.dp)
+            text = "Created by Rohit • Next-Gen AI Assistant Platform",
+            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+            color = GeminiBlue,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center
         )
 
         Spacer(modifier = Modifier.height(28.dp))
 
         Text(
-            text = "Suggested Prompts",
-            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+            text = "Choose a prompt or explore capabilities:",
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 12.dp)
+            modifier = Modifier.fillMaxWidth()
         )
 
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Grid / List of Suggestions
         Column(
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             suggestions.forEach { suggestion ->
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onSelectPrompt(suggestion.prompt) }
-                        .testTag("suggestion_${suggestion.title.replace(" ", "_")}")
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable { onSelectPrompt(suggestion.prompt) },
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    tonalElevation = 1.dp
                 ) {
                     Row(
-                        modifier = Modifier.padding(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
-                            modifier = Modifier.size(36.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(GeminiBlue.copy(alpha = 0.12f)),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = suggestion.icon,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
+                            Icon(
+                                imageVector = suggestion.icon,
+                                contentDescription = null,
+                                tint = GeminiBlue,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
 
                         Spacer(modifier = Modifier.width(12.dp))
 
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = suggestion.title,
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
                                 text = suggestion.prompt,
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                                style = MaterialTheme.typography.bodySmall.copy(lineHeight = 16.sp),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1
+                                maxLines = 2
                             )
                         }
                     }

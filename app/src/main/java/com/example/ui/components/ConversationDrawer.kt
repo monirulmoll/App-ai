@@ -21,13 +21,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubbleOutline
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -69,6 +75,9 @@ fun ConversationDrawer(
     onNewChat: () -> Unit,
     onRenameConversation: (Conversation) -> Unit,
     onDeleteConversation: (String) -> Unit,
+    onOpenWorkspace: () -> Unit = {},
+    onOpenMemory: () -> Unit = {},
+    onNavigateHome: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val sparkGradient = Brush.linearGradient(
@@ -107,52 +116,74 @@ fun ConversationDrawer(
                     )
                 }
 
-                Spacer(modifier = Modifier.width(10.dp))
+                Spacer(modifier = Modifier.width(12.dp))
 
                 Column {
                     Text(
                         text = "Gemo AI",
                         style = MaterialTheme.typography.titleLarge.copy(
                             fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp
+                            fontSize = 18.sp
                         ),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Realtime Database LLM",
-                        style = MaterialTheme.typography.labelSmall,
+                        text = "By Rohit • AI Assistant",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            // "New Chat" primary button
+            // Home Dashboard Button
+            Surface(
+                onClick = onNavigateHome,
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Home,
+                        contentDescription = null,
+                        tint = GeminiBlue,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "Home Dashboard",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                }
+            }
+
+            // New Chat Button
             Button(
                 onClick = onNewChat,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
                     .testTag("drawer_new_chat_button"),
-                shape = RoundedCornerShape(24.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
             ) {
                 Icon(
                     imageVector = Icons.Default.Add,
-                    contentDescription = stringResource(id = R.string.new_chat),
-                    modifier = Modifier.size(20.dp),
-                    tint = Color.White
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = stringResource(id = R.string.new_chat),
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.White
-                    )
+                    fontWeight = FontWeight.SemiBold
                 )
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             // Search Bar
             OutlinedTextField(
@@ -161,66 +192,107 @@ fun ConversationDrawer(
                 placeholder = {
                     Text(
                         text = stringResource(id = R.string.search_chats),
-                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp)
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     )
                 },
                 leadingIcon = {
                     Icon(
                         imageVector = Icons.Default.Search,
-                        contentDescription = "Search",
-                        modifier = Modifier.size(18.dp)
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     )
                 },
-                singleLine = true,
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { onSearchQueryChanged("") }) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Clear search",
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("search_conversations_input"),
-                shape = RoundedCornerShape(16.dp),
+                    .testTag("search_conversations_field"),
+                shape = RoundedCornerShape(10.dp),
+                singleLine = true,
                 colors = TextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
                     unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
                     focusedIndicatorColor = Color.Transparent,
                     unfocusedIndicatorColor = Color.Transparent
                 )
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             Text(
-                text = "Recent Chats",
+                text = "Conversations",
                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
+                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
             )
 
             // Conversations List
-            if (conversations.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (searchQuery.isNotEmpty()) "No chats matching '$searchQuery'" else "No conversations yet",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                items(conversations, key = { it.id }) { conv ->
+                    val isSelected = conv.id == currentConversationId
+                    ConversationDrawerItem(
+                        conversation = conv,
+                        isSelected = isSelected,
+                        onClick = { onSelectConversation(conv.id) },
+                        onRename = { onRenameConversation(conv) },
+                        onDelete = { onDeleteConversation(conv.id) }
                     )
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            // Bottom Tools Access Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Surface(
+                    onClick = onOpenWorkspace,
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    items(conversations, key = { it.id }) { conv ->
-                        ConversationItemRow(
-                            conversation = conv,
-                            isSelected = conv.id == currentConversationId,
-                            onClick = { onSelectConversation(conv.id) },
-                            onRename = { onRenameConversation(conv) },
-                            onDelete = { onDeleteConversation(conv.id) }
-                        )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Description, contentDescription = null, tint = GeminiBlue, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Files", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Surface(
+                    onClick = onOpenMemory,
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Psychology, contentDescription = null, tint = GeminiPurple, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Memory", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
                     }
                 }
             }
@@ -229,7 +301,7 @@ fun ConversationDrawer(
 }
 
 @Composable
-private fun ConversationItemRow(
+private fun ConversationDrawerItem(
     conversation: Conversation,
     isSelected: Boolean,
     onClick: () -> Unit,
@@ -238,15 +310,9 @@ private fun ConversationItemRow(
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
-    val bg = if (isSelected) {
-        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-    } else {
-        Color.Transparent
-    }
-
     Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = bg,
+        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else Color.Transparent,
+        shape = RoundedCornerShape(8.dp),
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }

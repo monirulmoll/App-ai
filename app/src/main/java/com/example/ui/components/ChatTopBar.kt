@@ -12,16 +12,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -31,15 +35,21 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.R
 import com.example.data.model.ConnectionStatus
 import com.example.ui.theme.GeminiBlue
 import com.example.ui.theme.GeminiCyan
@@ -47,162 +57,162 @@ import com.example.ui.theme.GeminiPurple
 import com.example.ui.theme.StatusConnected
 import com.example.ui.theme.StatusConnecting
 import com.example.ui.theme.StatusError
-import com.example.ui.theme.StatusGenerating
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatTopBar(
-    currentModelName: String,
+    currentModelName: String = "",
     connectionStatus: ConnectionStatus,
     onOpenDrawer: () -> Unit,
-    onOpenModelSelector: () -> Unit,
+    onOpenModelSelector: () -> Unit = {},
     onOpenSettings: () -> Unit,
+    onOpenWorkspace: () -> Unit,
+    onOpenMemory: () -> Unit,
     onNewChat: () -> Unit,
     onCheckConnection: () -> Unit,
+    onClearChat: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val statusColor = when (connectionStatus) {
+    var showMenu by remember { mutableStateOf(false) }
+
+    val statusDotColor = when (connectionStatus) {
         ConnectionStatus.CONNECTED -> StatusConnected
-        ConnectionStatus.CONNECTING -> StatusConnecting
+        ConnectionStatus.CONNECTING, ConnectionStatus.MESSAGE_SENDING -> StatusConnecting
+        ConnectionStatus.AI_GENERATING, ConnectionStatus.RESPONSE_RECEIVED -> GeminiCyan
         ConnectionStatus.SERVER_UNAVAILABLE -> StatusError
-        ConnectionStatus.MESSAGE_SENDING -> StatusConnecting
-        ConnectionStatus.AI_GENERATING -> StatusGenerating
-        ConnectionStatus.RESPONSE_RECEIVED -> StatusConnected
     }
 
-    val sparkGradient = Brush.linearGradient(
-        colors = listOf(GeminiBlue, GeminiPurple, GeminiCyan)
-    )
+    val statusLabel = when (connectionStatus) {
+        ConnectionStatus.CONNECTED -> "Live"
+        ConnectionStatus.CONNECTING -> "Connecting…"
+        ConnectionStatus.MESSAGE_SENDING -> "Sending…"
+        ConnectionStatus.AI_GENERATING -> "Thinking…"
+        ConnectionStatus.RESPONSE_RECEIVED -> "Ready"
+        ConnectionStatus.SERVER_UNAVAILABLE -> "Offline"
+    }
 
     TopAppBar(
         modifier = modifier.testTag("chat_top_bar"),
-        title = {
-            Column {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable { onOpenModelSelector() }
-                ) {
-                    Text(
-                        text = "Gemo AI",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 19.sp
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    // Model Badge
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.5f)),
-                        modifier = Modifier.testTag("model_selector_badge")
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(StatusConnected)
-                            )
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text(
-                                text = currentModelName,
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 11.sp
-                                ),
-                                maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                modifier = Modifier.widthIn(max = 140.dp),
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                            Icon(
-                                imageVector = Icons.Default.ArrowDropDown,
-                                contentDescription = "Select model",
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
-                    }
-                }
-
-                // Connection status indicator row
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .clickable { onCheckConnection() }
-                        .padding(top = 2.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(7.dp)
-                            .clip(CircleShape)
-                            .background(statusColor)
-                    )
-
-                    Spacer(modifier = Modifier.width(5.dp))
-
-                    Text(
-                        text = connectionStatus.label,
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Normal
-                        ),
-                        color = statusColor
-                    )
-
-                    if (connectionStatus == ConnectionStatus.SERVER_UNAVAILABLE) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Retry connection",
-                            tint = StatusError,
-                            modifier = Modifier.size(12.dp)
-                        )
-                    }
-                }
-            }
-        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
         navigationIcon = {
             IconButton(
                 onClick = onOpenDrawer,
-                modifier = Modifier.testTag("navigation_drawer_button")
+                modifier = Modifier.testTag("open_drawer_button")
             ) {
                 Icon(
                     imageVector = Icons.Default.Menu,
-                    contentDescription = "Chat history menu"
+                    contentDescription = "Open navigation menu",
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // App Logo Badge
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.linearGradient(
+                                listOf(GeminiBlue, GeminiPurple, GeminiCyan)
+                            )
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "Gemo AI",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             }
         },
         actions = {
+            // Workspace Button
             IconButton(
-                onClick = onNewChat,
-                modifier = Modifier.testTag("new_chat_top_button")
+                onClick = onOpenWorkspace,
+                modifier = Modifier.testTag("top_workspace_button")
             ) {
                 Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = "New chat"
+                    imageVector = Icons.Default.Description,
+                    contentDescription = "Workspace",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
+            // Memory Button
             IconButton(
-                onClick = onOpenSettings,
-                modifier = Modifier.testTag("settings_top_button")
+                onClick = onOpenMemory,
+                modifier = Modifier.testTag("top_memory_button")
             ) {
                 Icon(
-                    imageVector = Icons.Default.Settings,
-                    contentDescription = "Settings"
+                    imageVector = Icons.Default.Psychology,
+                    contentDescription = "Memory",
+                    tint = GeminiBlue
                 )
             }
-        },
-        colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
+
+            // New Chat Button
+            IconButton(
+                onClick = onNewChat,
+                modifier = Modifier.testTag("new_chat_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = stringResource(id = R.string.new_chat),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // Overflow Menu
+            Box {
+                IconButton(onClick = { showMenu = true }) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "More options",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Settings") },
+                        onClick = {
+                            showMenu = false
+                            onOpenSettings()
+                        },
+                        leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Clear Messages") },
+                        onClick = {
+                            showMenu = false
+                            onClearChat()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Test Connection") },
+                        onClick = {
+                            showMenu = false
+                            onCheckConnection()
+                        },
+                        leadingIcon = { Icon(Icons.Default.Sync, contentDescription = null) }
+                    )
+                }
+            }
+        }
     )
 }

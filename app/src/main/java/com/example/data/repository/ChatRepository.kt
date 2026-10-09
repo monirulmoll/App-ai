@@ -1,14 +1,20 @@
 package com.example.data.repository
 
 import android.content.Context
+import com.example.data.agent.AgentToolEngine
 import com.example.data.firebase.FirebaseRtdbManager
 import com.example.data.local.LocalChatPreferences
+import com.example.data.memory.MemoryManager
 import com.example.data.model.ChatMessage
 import com.example.data.model.ConnectionStatus
 import com.example.data.model.Conversation
 import com.example.data.model.LlmModelOption
 import com.example.data.model.LlmSettings
+import com.example.data.model.UserMemory
+import com.example.data.model.WorkspaceFile
+import com.example.data.router.RequestRouter
 import com.example.data.translator.TranslatorHelper
+import com.example.data.workspace.FileWorkspaceManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,6 +33,10 @@ private data class RequestLangInfo(
 class ChatRepository(context: Context) {
     private val prefs = LocalChatPreferences(context)
     private val rtdbManager = FirebaseRtdbManager(context)
+    val workspaceManager = FileWorkspaceManager(context)
+    val memoryManager = MemoryManager(context, prefs)
+    val toolEngine = AgentToolEngine(workspaceManager, memoryManager)
+
     private val scope = CoroutineScope(Dispatchers.Main)
     private val requestLanguageMap = mutableMapOf<String, RequestLangInfo>()
     private val userOriginalTextMap = mutableMapOf<String, String>()
@@ -52,6 +62,9 @@ class ChatRepository(context: Context) {
 
     private val _userModels = MutableStateFlow<List<LlmModelOption>>(prefs.getSavedModels())
     val userModels: StateFlow<List<LlmModelOption>> = _userModels.asStateFlow()
+
+    val memories: StateFlow<List<UserMemory>> = memoryManager.memories
+    val workspaceFiles: StateFlow<List<WorkspaceFile>> = workspaceManager.files
 
     // Track active request ID currently awaiting AI response
     private var pendingRequestId: String? = null
@@ -100,6 +113,13 @@ class ChatRepository(context: Context) {
         // Send initial model switch request to "/model/request"
         val initialGguf = LlmSettings.ensureGgufFilename(currentSettings.modelName)
         rtdbManager.requestModelSwitch(initialGguf)
+
+        // Sync initial memories to RTDB if connected
+        scope.launch {
+            memoryManager.memories.collect { memList ->
+                rtdbManager.syncMemories(memList)
+            }
+        }
     }
 
     fun getSettings(): LlmSettings = _settings.value
@@ -132,7 +152,8 @@ class ChatRepository(context: Context) {
             provider = provider,
             modelName = displayName,
             ggufFilename = exactGguf,
-            description = "Exact: $exactGguf"
+            description = "Exact: $exactGguf",
+            capabilities = listOf("chat", "agent")
         )
         val currentList = _userModels.value
         val updated = currentList.filterNot { it.ggufFilename.equals(exactGguf, ignoreCase = true) } + newOption
@@ -164,11 +185,15 @@ class ChatRepository(context: Context) {
 
         if (oldUrl != newSettings.firebaseUrl) {
             rtdbManager.initialize(newSettings.firebaseUrl)
-            // Re-subscribe current conversation to new database
             _currentConversation.value?.let { conv ->
                 subscribeToConversation(conv.id)
             }
         }
+    }
+
+    fun toggleAgentMode(enabled: Boolean) {
+        val updated = _settings.value.copy(agentModeEnabled = enabled)
+        updateSettings(updated)
     }
 
     fun checkConnection() {
@@ -245,7 +270,6 @@ class ChatRepository(context: Context) {
                 handleIncomingMessage(updatedMsg)
             },
             onError = { errorText ->
-                // Mark active pending message if any as error
                 pendingRequestId?.let { reqId ->
                     updateMessageStatusByRequestId(reqId, "error", errorText)
                 }
@@ -258,7 +282,6 @@ class ChatRepository(context: Context) {
             var processedMessage = incoming
 
             if (incoming.isUser) {
-                // Keep the user's original typed message in the bubble so it never changes to English on screen
                 val currentList = _messages.value
                 val original = userOriginalTextMap[incoming.messageId]
                     ?: userOriginalTextMap[incoming.requestId]
@@ -273,7 +296,6 @@ class ChatRepository(context: Context) {
                 val targetLang = langInfo?.sourceLang ?: _messages.value.lastOrNull { it.isUser }?.sourceLang ?: "en"
                 val isLatin = langInfo?.isLatinScript ?: TranslatorHelper.isMostlyLatin(rawPrompt)
 
-                // Model consistency: ensure the message reflects the model chosen by user for this chat
                 val existingMsg = _messages.value.find {
                     it.messageId == incoming.messageId ||
                     (incoming.requestId.isNotEmpty() && it.requestId == incoming.requestId && it.isAi)
@@ -283,7 +305,6 @@ class ChatRepository(context: Context) {
                     ?: _settings.value.modelName
 
                 if (incoming.text.isNotEmpty()) {
-                    // 1. Enforce Rohit as creator and scrub competitor company mentions cleanly
                     val formatted = TranslatorHelper.sanitizeAndFormatReply(
                         rawAiResponse = incoming.text,
                         rawPrompt = rawPrompt,
@@ -292,7 +313,6 @@ class ChatRepository(context: Context) {
                         isLatinScript = isLatin
                     )
 
-                    // 2. If it's a creator or identity query, formatted is ALREADY in the exact user language
                     val finalDisplayText = if (TranslatorHelper.isCreatorOrIdentityQuery(rawPrompt, engPrompt)) {
                         formatted
                     } else if (targetLang != "en" && targetLang != "auto") {
@@ -305,9 +325,18 @@ class ChatRepository(context: Context) {
                         formatted
                     }
 
-                    processedMessage = incoming.copy(text = finalDisplayText, model = requestedModel)
+                    processedMessage = incoming.copy(
+                        text = finalDisplayText,
+                        model = requestedModel,
+                        toolCall = incoming.toolCall ?: existingMsg?.toolCall,
+                        toolResult = incoming.toolResult ?: existingMsg?.toolResult
+                    )
                 } else {
-                    processedMessage = incoming.copy(model = requestedModel)
+                    processedMessage = incoming.copy(
+                        model = requestedModel,
+                        toolCall = incoming.toolCall ?: existingMsg?.toolCall,
+                        toolResult = incoming.toolResult ?: existingMsg?.toolResult
+                    )
                 }
             }
 
@@ -317,10 +346,8 @@ class ChatRepository(context: Context) {
             }
 
             if (existingIndex >= 0) {
-                // Update existing message
                 currentList[existingIndex] = processedMessage
             } else {
-                // If it's an AI message matching our pending request or newly added
                 currentList.add(processedMessage)
             }
 
@@ -329,7 +356,6 @@ class ChatRepository(context: Context) {
                 prefs.saveMessages(conv.id, currentList)
             }
 
-            // If incoming is AI response for our pending request
             if (incoming.isAi && incoming.requestId == pendingRequestId) {
                 rtdbManager.cancelResponseTimeout()
                 if (incoming.status == "completed" || incoming.text.isNotEmpty()) {
@@ -342,91 +368,83 @@ class ChatRepository(context: Context) {
         }
     }
 
-    fun sendMessage(text: String, overrideModel: String? = null) {
+    fun sendMessage(
+        text: String,
+        overrideModel: String? = null,
+        attachedImageUri: String? = null,
+        attachedImageBase64: String? = null,
+        forcedAgentMode: Boolean? = null
+    ) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
+        val hasImage = !attachedImageUri.isNullOrEmpty() || !attachedImageBase64.isNullOrEmpty()
+        if (trimmed.isEmpty() && !hasImage) return
 
         val conv = _currentConversation.value ?: createNewConversation()
         val chosenModel = overrideModel ?: conv.model.ifEmpty { _settings.value.modelName }
+        val agentModeActive = forcedAgentMode ?: _settings.value.agentModeEnabled
 
-        // Check if model switch is currently in progress or failed
-        val isSwitching = rtdbManager.isModelSwitching.value
-        val lastSwitch = rtdbManager.modelSwitchResponse.value
+        // Route the request to determine intent and tools
+        val routing = RequestRouter.route(
+            prompt = trimmed,
+            hasImage = hasImage,
+            agentModeEnabled = agentModeActive,
+            currentModel = chosenModel
+        )
 
-        if (isSwitching) {
-            val errorMsg = "Model switch is in progress. Please wait for server to finish switching models."
-            val userMsgId = "msg_user_${System.currentTimeMillis()}"
-            val errMessage = ChatMessage(
-                messageId = userMsgId,
-                conversationId = conv.id,
-                sender = "user",
-                text = trimmed,
-                originalText = trimmed,
-                timestamp = System.currentTimeMillis(),
-                status = "error",
-                errorMessage = errorMsg,
-                model = chosenModel
-            )
-            val currentList = _messages.value.toMutableList()
-            currentList.add(errMessage)
-            _messages.value = currentList
-            prefs.saveMessages(conv.id, currentList)
-            return
-        }
-
-        if (lastSwitch != null && !lastSwitch.success && chosenModel.equals(lastSwitch.requested, ignoreCase = true)) {
-            val errorMsg = "Cannot send message: Model '${lastSwitch.requested}' is not available on server (${lastSwitch.message})."
-            val userMsgId = "msg_user_${System.currentTimeMillis()}"
-            val errMessage = ChatMessage(
-                messageId = userMsgId,
-                conversationId = conv.id,
-                sender = "user",
-                text = trimmed,
-                originalText = trimmed,
-                timestamp = System.currentTimeMillis(),
-                status = "error",
-                errorMessage = errorMsg,
-                model = chosenModel
-            )
-            val currentList = _messages.value.toMutableList()
-            currentList.add(errMessage)
-            _messages.value = currentList
-            prefs.saveMessages(conv.id, currentList)
-            return
-        }
-
+        // Generate request and message IDs
         val reqId = UUID.randomUUID().toString()
         val userMsgId = "msg_user_${System.currentTimeMillis()}"
+
+        // Memory context lookup
+        val memoryContext = memoryManager.buildContextForPrompt(trimmed, _settings.value.memoryEnabled)
+
+        // Execute local tool if applicable (e.g. calculator or file operation)
+        var localToolCall: String? = null
+        var localToolResult: String? = null
+
+        if (routing.detectedTool != null && agentModeActive) {
+            localToolCall = "${routing.detectedTool}(${routing.toolInput ?: ""})"
+            if (routing.detectedTool == "calculator" || routing.detectedTool == "file_workspace") {
+                scope.launch {
+                    val toolResult = toolEngine.executeTool(routing.detectedTool, routing.toolInput ?: trimmed)
+                    localToolResult = toolResult.result
+                }
+            }
+        }
 
         val userMessage = ChatMessage(
             messageId = userMsgId,
             conversationId = conv.id,
             sender = "user",
-            text = trimmed,
-            originalText = trimmed,
+            text = trimmed.ifEmpty { "[Image Attachment]" },
+            originalText = trimmed.ifEmpty { "[Image Attachment]" },
             timestamp = System.currentTimeMillis(),
             status = "sending",
             requestId = reqId,
-            model = chosenModel
+            model = chosenModel,
+            imageUri = attachedImageUri,
+            imageBase64 = attachedImageBase64,
+            toolCall = localToolCall,
+            toolResult = localToolResult,
+            agentMode = agentModeActive,
+            intent = routing.intent.id,
+            memoryContext = memoryContext.ifEmpty { null }
         )
 
-        // If conversation is "New Chat", auto-title from first message
+        // Auto-title conversation from first prompt
         if (conv.title == "New Chat" || conv.title.isEmpty()) {
-            val autoTitle = if (trimmed.length > 28) trimmed.take(28) + "…" else trimmed
-            renameConversation(conv.id, autoTitle)
+            val displayTitle = if (trimmed.length > 28) trimmed.take(28) + "…" else trimmed.ifEmpty { "Image Analysis" }
+            renameConversation(conv.id, displayTitle)
         }
 
-        // Record original text to permanently prevent UI translation
-        userOriginalTextMap[userMsgId] = trimmed
-        userOriginalTextMap[reqId] = trimmed
+        userOriginalTextMap[userMsgId] = userMessage.text
+        userOriginalTextMap[reqId] = userMessage.text
 
-        // Add user message to UI immediately
         val currentList = _messages.value.toMutableList()
         currentList.add(userMessage)
         _messages.value = currentList
         prefs.saveMessages(conv.id, currentList)
 
-        // Create pending AI placeholder for typing animation
         val aiPlaceholderId = "msg_ai_${System.currentTimeMillis() + 1}"
         val aiPlaceholder = ChatMessage(
             messageId = aiPlaceholderId,
@@ -436,19 +454,21 @@ class ChatRepository(context: Context) {
             timestamp = System.currentTimeMillis() + 1,
             status = "generating",
             requestId = reqId,
-            model = chosenModel
+            model = chosenModel,
+            toolCall = localToolCall,
+            toolResult = localToolResult,
+            agentMode = agentModeActive,
+            intent = routing.intent.id
         )
 
         pendingRequestId = reqId
 
-        // Asynchronously translate to English before saving to Firebase RTDB!
         scope.launch {
-            val transResult = TranslatorHelper.translateToEnglish(trimmed)
+            val transResult = TranslatorHelper.translateToEnglish(trimmed.ifEmpty { "analyze image" })
             val englishPrompt = transResult.translatedEnglish
             val detectedLang = transResult.detectedLanguage
             val isLatin = transResult.isLatinScript
 
-            // Save request language mapping
             val langInfo = RequestLangInfo(
                 rawPrompt = trimmed,
                 englishPrompt = englishPrompt,
@@ -459,20 +479,17 @@ class ChatRepository(context: Context) {
             lastActiveLanguageInfo = langInfo
 
             val messageToSend = userMessage.copy(
-                text = englishPrompt, // Clean English stored in Firebase RTDB
-                originalText = trimmed,
+                text = englishPrompt,
+                originalText = trimmed.ifEmpty { "[Image Attachment]" },
                 sourceLang = detectedLang,
                 status = "sent"
             )
 
-            // Send to Firebase RTDB
             rtdbManager.sendMessage(
                 message = messageToSend,
                 onSuccess = {
-                    // Update user message status to "sent"
                     updateUserMessageStatus(userMsgId, "sent", null)
 
-                    // Add AI placeholder so user sees immediate modern AI thinking animation
                     val listWithAi = _messages.value.toMutableList()
                     if (listWithAi.none { it.requestId == reqId && it.isAi }) {
                         listWithAi.add(aiPlaceholder)
@@ -480,14 +497,11 @@ class ChatRepository(context: Context) {
                         prefs.saveMessages(conv.id, listWithAi)
                     }
 
-                    // Start timeout for AI response
                     rtdbManager.startResponseTimeout(_settings.value.responseTimeoutSeconds) {
-                        // AI response timed out
                         handleAiResponseTimeout(reqId, aiPlaceholderId)
                     }
                 },
                 onError = { errorText ->
-                    // Mark user message as error and allow retry
                     updateUserMessageStatus(userMsgId, "error", errorText)
                     pendingRequestId = null
                 }
@@ -495,10 +509,28 @@ class ChatRepository(context: Context) {
         }
     }
 
+    private fun addErrorMessageToChat(convId: String, text: String, model: String, errorMsg: String) {
+        val userMsgId = "msg_user_${System.currentTimeMillis()}"
+        val errMessage = ChatMessage(
+            messageId = userMsgId,
+            conversationId = convId,
+            sender = "user",
+            text = text,
+            originalText = text,
+            timestamp = System.currentTimeMillis(),
+            status = "error",
+            errorMessage = errorMsg,
+            model = model
+        )
+        val currentList = _messages.value.toMutableList()
+        currentList.add(errMessage)
+        _messages.value = currentList
+        prefs.saveMessages(convId, currentList)
+    }
+
     fun retryMessage(failedMessage: ChatMessage) {
         val conv = _currentConversation.value ?: return
 
-        // Update status back to sending
         updateUserMessageStatus(failedMessage.messageId, "sending", null)
 
         val reqId = if (failedMessage.requestId.isNotEmpty()) failedMessage.requestId else UUID.randomUUID().toString()
@@ -516,7 +548,6 @@ class ChatRepository(context: Context) {
             onSuccess = {
                 updateUserMessageStatus(failedMessage.messageId, "sent", null)
 
-                // Add or reset AI placeholder
                 val listWithAi = _messages.value.toMutableList()
                 val existingAiIdx = listWithAi.indexOfFirst { it.requestId == reqId && it.isAi }
                 if (existingAiIdx >= 0) {
@@ -552,28 +583,44 @@ class ChatRepository(context: Context) {
         )
     }
 
+    fun regenerateMessage(aiMessage: ChatMessage) {
+        val conv = _currentConversation.value ?: return
+        val currentList = _messages.value
+        val aiIdx = currentList.indexOfFirst { it.messageId == aiMessage.messageId }
+        val userMsg = if (aiIdx > 0) currentList[aiIdx - 1] else currentList.lastOrNull { it.isUser }
+        if (userMsg != null) {
+            sendMessage(
+                text = userMsg.originalText ?: userMsg.text,
+                overrideModel = aiMessage.model.ifEmpty { conv.model },
+                attachedImageUri = userMsg.imageUri,
+                attachedImageBase64 = userMsg.imageBase64,
+                forcedAgentMode = userMsg.agentMode
+            )
+        }
+    }
+
     fun stopGeneration() {
         rtdbManager.cancelResponseTimeout()
         val currentConvId = _currentConversation.value?.id ?: ""
         val reqId = pendingRequestId ?: ""
 
-        // Notify server that user pressed stop and await stop confirmation
-        rtdbManager.requestStopGeneration(currentConvId, reqId) { success ->
-            // Process stop confirmation from server
-            val currentList = _messages.value.toMutableList()
-            val aiIdx = currentList.indexOfFirst { (it.requestId == reqId || reqId.isEmpty()) && it.isAi && it.isGenerating }
-            if (aiIdx >= 0) {
-                val current = currentList[aiIdx]
-                val updatedText = if (current.text.isEmpty()) "Generation stopped by user." else current.text
-                currentList[aiIdx] = current.copy(status = "completed", text = updatedText)
-                _messages.value = currentList
-                _currentConversation.value?.let { conv ->
-                    prefs.saveMessages(conv.id, currentList)
-                }
+        // Instantly mark UI as stopped with zero latency so user never waits
+        val currentList = _messages.value.toMutableList()
+        val aiIdx = currentList.indexOfFirst { (it.requestId == reqId || reqId.isEmpty()) && it.isAi && it.isGenerating }
+        if (aiIdx >= 0) {
+            val current = currentList[aiIdx]
+            val updatedText = if (current.text.isEmpty()) "Generation stopped by user." else current.text
+            currentList[aiIdx] = current.copy(status = "completed", text = updatedText)
+            _messages.value = currentList
+            _currentConversation.value?.let { conv ->
+                prefs.saveMessages(conv.id, currentList)
             }
-            pendingRequestId = null
-            rtdbManager.setConnectionStatus(ConnectionStatus.CONNECTED)
         }
+        pendingRequestId = null
+        rtdbManager.setConnectionStatus(ConnectionStatus.CONNECTED)
+
+        // Notify backend in background asynchronously
+        rtdbManager.requestStopGeneration(currentConvId, reqId) { _ -> }
     }
 
     private fun handleAiResponseTimeout(reqId: String, aiMsgId: String) {
@@ -646,5 +693,42 @@ class ChatRepository(context: Context) {
         val conv = _currentConversation.value ?: return
         _messages.value = emptyList()
         prefs.deleteConversationData(conv.id)
+    }
+
+    // Workspace & Memory Operations
+    suspend fun createWorkspaceFile(filename: String, content: String): Result<WorkspaceFile> {
+        val result = workspaceManager.createOrUpdateFile(filename, content)
+        result.getOrNull()?.let { rtdbManager.syncWorkspaceFile(it) }
+        return result
+    }
+
+    suspend fun deleteWorkspaceFile(filename: String): Result<Boolean> {
+        return workspaceManager.deleteFile(filename)
+    }
+
+    suspend fun readWorkspaceFile(filename: String): Result<String> {
+        return workspaceManager.readFile(filename)
+    }
+
+    fun addMemory(content: String, category: String = "custom"): UserMemory {
+        return memoryManager.addMemory(content, category)
+    }
+
+    fun deleteMemory(id: String) {
+        memoryManager.deleteMemory(id)
+    }
+
+    fun toggleMemory(id: String) {
+        memoryManager.toggleMemory(id)
+    }
+
+    fun clearAllMemories() {
+        memoryManager.clearAllMemories()
+    }
+
+    fun isOnboardingCompleted(): Boolean = prefs.isOnboardingCompleted()
+
+    fun setOnboardingCompleted(completed: Boolean) {
+        prefs.setOnboardingCompleted(completed)
     }
 }

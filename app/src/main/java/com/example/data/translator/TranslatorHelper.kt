@@ -28,8 +28,8 @@ object TranslatorHelper {
     }
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(2, TimeUnit.SECONDS)
         .build()
 
     // Common Banglish / Hinglish / Romanized phrases instant mapping
