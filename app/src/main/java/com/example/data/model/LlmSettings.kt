@@ -25,7 +25,7 @@ data class LlmSettings(
     val translatorEnabled: Boolean = true
 ) {
     companion object {
-        const val DEFAULT_FIREBASE_URL = ""
+        const val DEFAULT_FIREBASE_URL = "https://ussr-error-404-default-rtdb.firebaseio.com"
         const val DEFAULT_SYSTEM_INSTRUCTION = "You are Gemo AI, an intelligent AI created by Rohit. Whenever introducing yourself or asked who created or made you, proudly state that your maker and creator is Rohit."
 
         val AVAILABLE_MODELS: List<LlmModelOption> = emptyList()

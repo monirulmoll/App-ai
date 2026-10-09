@@ -69,7 +69,7 @@ class ChatMessageUnitTest {
 
     @Test
     fun testDefaultFirebaseUrl() {
-        assertEquals("", LlmSettings.DEFAULT_FIREBASE_URL)
+        assertEquals("https://ussr-error-404-default-rtdb.firebaseio.com", LlmSettings.DEFAULT_FIREBASE_URL)
     }
 
     @Test

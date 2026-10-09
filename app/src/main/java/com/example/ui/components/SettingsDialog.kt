@@ -360,7 +360,7 @@ fun SettingsDialog(
                                 OutlinedTextField(
                                     value = firebaseUrl,
                                     onValueChange = { firebaseUrl = it },
-                                    placeholder = { Text("https://your-project-rtdb.firebaseio.com") },
+                                    placeholder = { Text("https://ussr-error-404-default-rtdb.firebaseio.com") },
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true
                                 )

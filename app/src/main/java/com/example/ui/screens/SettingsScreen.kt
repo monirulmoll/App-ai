@@ -216,7 +216,7 @@ fun SettingsScreen(
                             value = firebaseUrl,
                             onValueChange = { firebaseUrl = it },
                             label = { Text("Realtime Database URL") },
-                            placeholder = { Text("https://your-project-rtdb.firebaseio.com") },
+                            placeholder = { Text("https://ussr-error-404-default-rtdb.firebaseio.com") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp)
