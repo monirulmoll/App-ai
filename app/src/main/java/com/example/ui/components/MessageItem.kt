@@ -17,6 +17,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Edit
@@ -514,6 +516,51 @@ private fun AiMessageBubble(
                                         content = message.text,
                                         modifier = Modifier.fillMaxWidth()
                                     )
+                                }
+
+                                if (message.generatedFiles.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Card(
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = CardDefaults.cardColors(containerColor = GeminiCyan.copy(alpha = 0.12f)),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, GeminiCyan.copy(alpha = 0.4f)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(10.dp)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.Code, contentDescription = null, tint = GeminiCyan, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Project Files Created (${message.generatedFiles.size})", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = GeminiCyan)
+                                            }
+                                            Spacer(modifier = Modifier.height(6.dp))
+                                            Row(
+                                                modifier = Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                message.generatedFiles.forEach { fname ->
+                                                    Surface(
+                                                        shape = RoundedCornerShape(6.dp),
+                                                        color = MaterialTheme.colorScheme.surface,
+                                                        border = androidx.compose.foundation.BorderStroke(0.5.dp, GeminiCyan.copy(alpha = 0.3f))
+                                                    ) {
+                                                        Text(
+                                                            text = fname,
+                                                            fontSize = 11.sp,
+                                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                            color = MaterialTheme.colorScheme.onSurface,
+                                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(6.dp))
+                                            Text(
+                                                text = "✓ Files automatically added to Edit Code Workspace",
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

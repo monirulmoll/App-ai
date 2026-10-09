@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -90,11 +91,12 @@ fun HomeScreen(
 
     val quickActions = listOf(
         QuickAction("Chat", Icons.AutoMirrored.Filled.Chat, Color(0xFF00D2D3), AppScreen.CHAT),
-        QuickAction("Image Gen", Icons.Default.Image, Color(0xFFFF4181), AppScreen.IMAGE_GEN),
-        QuickAction("Vision", Icons.Default.Visibility, Color(0xFF00F0FF), AppScreen.VISION),
         QuickAction("Coding", Icons.Default.Code, Color(0xFF00E676), AppScreen.CODE_WORKSPACE),
-        QuickAction("Files", Icons.Default.Folder, Color(0xFFFFB800), AppScreen.FILE_MANAGER),
+        QuickAction("Terminal", Icons.Default.Terminal, Color(0xFF00FF66), AppScreen.TERMINAL),
         QuickAction("AI Agent", Icons.Default.SmartToy, Color(0xFFBC8CFF), AppScreen.AGENT_MODE),
+        QuickAction("Vision", Icons.Default.Visibility, Color(0xFF00F0FF), AppScreen.VISION),
+        QuickAction("Image Gen", Icons.Default.Image, Color(0xFFFF4181), AppScreen.IMAGE_GEN),
+        QuickAction("Files", Icons.Default.Folder, Color(0xFFFFB800), AppScreen.CODE_WORKSPACE),
         QuickAction("Memory", Icons.Default.Psychology, Color(0xFFE040FB), AppScreen.MEMORY)
     )
 

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Description
@@ -71,6 +72,7 @@ fun ChatTopBar(
     onNewChat: () -> Unit,
     onCheckConnection: () -> Unit,
     onClearChat: () -> Unit,
+    onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -97,15 +99,29 @@ fun ChatTopBar(
             containerColor = MaterialTheme.colorScheme.surface
         ),
         navigationIcon = {
-            IconButton(
-                onClick = onOpenDrawer,
-                modifier = Modifier.testTag("open_drawer_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Menu,
-                    contentDescription = "Open navigation menu",
-                    tint = MaterialTheme.colorScheme.onSurface
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (onBack != null) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier.testTag("chat_back_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = onOpenDrawer,
+                    modifier = Modifier.testTag("open_drawer_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Menu,
+                        contentDescription = "Open navigation menu",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
         },
         title = {

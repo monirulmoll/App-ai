@@ -52,6 +52,8 @@ class FirebaseRtdbManager(private val context: Context) {
     private val _isModelSwitching = MutableStateFlow(false)
     val isModelSwitching: StateFlow<Boolean> = _isModelSwitching.asStateFlow()
 
+    val isDatabaseReady: Boolean get() = databaseInstance != null && currentUrl.isNotBlank()
+
     private var activeModelListener: ValueEventListener? = null
     private var modelResponseListener: ValueEventListener? = null
 
@@ -546,6 +548,108 @@ class FirebaseRtdbManager(private val context: Context) {
         }
     }
 
+    // Sync all button configurations and settings to Firebase RTDB (/agent/config/settings & /agent/config/features)
+    fun syncSettingsToRtdb(settings: LlmSettings) {
+        val db = databaseInstance ?: return
+        val configRef = db.getReference("agent").child("config")
+
+        val exactTemperature = (Math.round(settings.temperature * 100.0) / 100.0).toFloat()
+        val exactMaxTokens = settings.maxTokens
+        val exactTimeout = settings.responseTimeoutSeconds
+
+        val settingsMap = mapOf(
+            "agent_mode_enabled" to settings.agentModeEnabled,
+            "memory_enabled" to settings.memoryEnabled,
+            "vision_enabled" to settings.visionEnabled,
+            "translator_enabled" to settings.translatorEnabled,
+            "provider" to settings.provider,
+            "model_name" to settings.modelName,
+            "max_tokens" to exactMaxTokens,
+            "temperature" to exactTemperature,
+            "timeout" to exactTimeout,
+            "response_timeout_seconds" to exactTimeout,
+            "speech_input_language" to settings.speechInputLanguage,
+            "system_instruction" to settings.systemInstruction,
+            "updated_at" to System.currentTimeMillis()
+        )
+
+        // Features map for backend capabilities contract
+        val featuresMap = mapOf<String, Any>(
+            "agent_mode" to settings.agentModeEnabled,
+            "memory_retrieval" to settings.memoryEnabled,
+            "image_understanding" to settings.visionEnabled,
+            "translator" to settings.translatorEnabled
+        )
+
+        // 1. Write full configuration under /agent/config/settings
+        configRef.child("settings").setValue(settingsMap)
+        configRef.child("features").updateChildren(featuresMap)
+
+        // 2. Write numeric slider parameters directly under /agent/config/parameters
+        val parametersMap = mapOf(
+            "max_tokens" to exactMaxTokens,
+            "temperature" to exactTemperature,
+            "timeout" to exactTimeout,
+            "response_timeout_seconds" to exactTimeout,
+            "updated_at" to System.currentTimeMillis()
+        )
+        configRef.child("parameters").setValue(parametersMap)
+
+        // 3. Write dedicated system instruction paths
+        configRef.child("system_instruction").setValue(settings.systemInstruction)
+        db.getReference("agent").child("instruction").setValue(settings.systemInstruction)
+
+        // 4. Also sync to root /settings node for easy backend access
+        val rootSettingsRef = db.getReference("settings")
+        rootSettingsRef.child("parameters").setValue(parametersMap)
+        rootSettingsRef.child("max_tokens").setValue(exactMaxTokens)
+        rootSettingsRef.child("temperature").setValue(exactTemperature)
+        rootSettingsRef.child("timeout").setValue(exactTimeout)
+        rootSettingsRef.child("system_instruction").setValue(settings.systemInstruction)
+    }
+
+    // Direct Realtime Slider update as user slides (max_tokens, temperature, timeout)
+    fun syncSliderParameter(paramKey: String, value: Number) {
+        val db = databaseInstance ?: return
+        val configRef = db.getReference("agent").child("config")
+        val rootSettingsRef = db.getReference("settings")
+
+        // Update in /agent/config/settings/{paramKey}
+        configRef.child("settings").child(paramKey).setValue(value)
+        // Update in /agent/config/parameters/{paramKey}
+        configRef.child("parameters").child(paramKey).setValue(value)
+        // Update in /settings/{paramKey} and /settings/parameters/{paramKey}
+        rootSettingsRef.child(paramKey).setValue(value)
+        rootSettingsRef.child("parameters").child(paramKey).setValue(value)
+
+        // Ensure timeout alias compatibility
+        if (paramKey == "timeout") {
+            configRef.child("settings").child("response_timeout_seconds").setValue(value)
+            configRef.child("parameters").child("response_timeout_seconds").setValue(value)
+        } else if (paramKey == "response_timeout_seconds") {
+            configRef.child("settings").child("timeout").setValue(value)
+            configRef.child("parameters").child("timeout").setValue(value)
+            rootSettingsRef.child("timeout").setValue(value)
+        }
+
+        // Timestamp
+        val now = System.currentTimeMillis()
+        configRef.child("parameters").child("updated_at").setValue(now)
+        rootSettingsRef.child("updated_at").setValue(now)
+    }
+
+    // Direct Realtime System Instruction update
+    fun syncSystemInstruction(instruction: String) {
+        val db = databaseInstance ?: return
+        val configRef = db.getReference("agent").child("config")
+        val rootSettingsRef = db.getReference("settings")
+
+        configRef.child("settings").child("system_instruction").setValue(instruction)
+        configRef.child("system_instruction").setValue(instruction)
+        db.getReference("agent").child("instruction").setValue(instruction)
+        rootSettingsRef.child("system_instruction").setValue(instruction)
+    }
+
     // Next-Gen additions: Workspace & Memory Sync to Firebase RTDB
     fun syncWorkspaceFile(file: WorkspaceFile) {
         val db = databaseInstance ?: return
@@ -557,5 +661,62 @@ class FirebaseRtdbManager(private val context: Context) {
         val db = databaseInstance ?: return
         val map = memories.associate { it.id to it.toMap() }
         db.getReference("memory").child("active").setValue(map)
+    }
+
+    // Terminal Command Execution via Autonomous Backend
+    fun sendTerminalCommand(
+        command: String,
+        language: String = "shell",
+        filename: String? = null,
+        code: String? = null,
+        onOutput: (stdout: String, stderr: String, exitCode: Int, status: String) -> Unit
+    ): String {
+        val db = databaseInstance
+        val commandId = "cmd_" + java.util.UUID.randomUUID().toString().take(10)
+        if (db == null) {
+            onOutput("", "Error: Backend database not initialized. Please connect in Settings.", 1, "ERROR")
+            return commandId
+        }
+
+        val cmdRef = db.getReference("agent").child("terminal").child("commands").child(commandId)
+        val payload = mutableMapOf<String, Any?>(
+            "id" to commandId,
+            "command" to command,
+            "language" to language,
+            "status" to "PENDING",
+            "timestamp" to System.currentTimeMillis()
+        )
+        if (!filename.isNullOrBlank()) payload["filename"] = filename
+        if (!code.isNullOrBlank()) payload["code"] = code
+
+        cmdRef.setValue(payload)
+
+        // Listen for output from backend
+        val outRef = db.getReference("agent").child("terminal").child("output").child(commandId)
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                if (!snapshot.exists()) return
+                val map = snapshot.value as? Map<*, *> ?: return
+                val stdout = (map["stdout"] as? String) ?: ""
+                val stderr = (map["stderr"] as? String) ?: ""
+                val exitCode = (map["exit_code"] as? Number)?.toInt() ?: 0
+                val status = (map["status"] as? String) ?: "RUNNING"
+                onOutput(stdout, stderr, exitCode, status)
+                if (status == "COMPLETED" || status == "ERROR") {
+                    outRef.removeEventListener(this)
+                }
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                onOutput("", "Terminal listener error: ${error.message}", 1, "ERROR")
+            }
+        }
+        outRef.addValueEventListener(listener)
+        return commandId
+    }
+
+    fun cancelTerminalCommand(commandId: String) {
+        val db = databaseInstance ?: return
+        db.getReference("agent").child("terminal").child("commands").child(commandId).child("status").setValue("CANCELLED")
     }
 }

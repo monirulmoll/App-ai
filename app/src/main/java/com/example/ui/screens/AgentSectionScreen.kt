@@ -320,47 +320,64 @@ private fun AgentSettingsContent(
             }
         }
 
-        // Direct Talk to Agent Quick Launch
+        // Backend Setup & RTDB Data Path Guide
         item {
+            var showPathDetails by remember { mutableStateOf(false) }
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = GeminiBlue.copy(alpha = 0.12f)
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                 )
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Column(modifier = Modifier.padding(14.dp)) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(GeminiBlue.copy(alpha = 0.2f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = GeminiBlue, modifier = Modifier.size(20.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(GeminiCyan.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Terminal, contentDescription = null, tint = GeminiCyan, modifier = Modifier.size(20.dp))
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text("Backend Python & RTDB Contract", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text("Real execution setup for Linux, Termux & Server", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text("Talk to Autonomous Agent", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                            Text("Chat directly with Gemo agent, send files, code & instructions", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Button(
+                            onClick = { showPathDetails = !showPathDetails },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = GeminiCyan)
+                        ) {
+                            Text(if (showPathDetails) "Hide" else "Setup Guide", fontSize = 12.sp, color = Color.Black, fontWeight = FontWeight.Bold)
                         }
                     }
-                    Button(
-                        onClick = onNavigateToChat,
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
-                    ) {
-                        Text("Chat Now", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+
+                    if (showPathDetails) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = DarkCodeBlockBackground,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(
+                                    text = "1. Setup Environment:\n   python Setup.py\n\n2. Run Autonomous Engine:\n   python Autonomous.py --firebase-url <YOUR_RTDB_URL>\n\n3. Real RTDB Data Paths:\n   • /conversations/{id}/messages -> App Generation Tasks\n   • /workspace/files             -> Synced Project Files\n   • /agent/terminal/commands     -> Python & C++ Run Queue\n   • /agent/terminal/output       -> Realtime stdout/stderr\n   • /agent/status                -> Authoritative Heartbeat",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF00FF66),
+                                    lineHeight = 15.sp
+                                )
+                            }
+                        }
                     }
                 }
             }

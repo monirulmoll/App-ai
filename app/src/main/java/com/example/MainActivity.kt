@@ -26,9 +26,13 @@ import com.example.ui.screens.ModelManagementScreen
 import com.example.ui.screens.OnboardingScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SplashScreen
+import com.example.ui.screens.TerminalScreen
 import com.example.ui.screens.VisionAnalysisScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.ChatViewModel
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,6 +54,8 @@ class MainActivity : ComponentActivity() {
                 uiState.currentConversation?.model?.ifEmpty { uiState.settings.modelName }
                     ?: uiState.settings.modelName
             }
+
+            var terminalInitialFile by remember { mutableStateOf<String?>(null) }
 
             MyApplicationTheme(darkTheme = isDarkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -123,17 +129,44 @@ class MainActivity : ComponentActivity() {
                                     onBack = { viewModel.navigateBack() }
                                 )
                             }
+                            AppScreen.TERMINAL -> {
+                                TerminalScreen(
+                                    workspaceFiles = uiState.workspaceFiles,
+                                    initialFileToRun = terminalInitialFile,
+                                    onExecuteCommand = { cmd, lang, fname, code, onOut ->
+                                        viewModel.executeTerminalCommand(cmd, lang, fname, code, onOut)
+                                    },
+                                    onCancelCommand = { cmdId ->
+                                        viewModel.cancelTerminalCommand(cmdId)
+                                    },
+                                    onNavigate = { target -> viewModel.navigateTo(target) },
+                                    onBack = { viewModel.navigateBack() }
+                                )
+                            }
                             AppScreen.CODE_WORKSPACE, AppScreen.FILE_MANAGER -> {
                                 CodeWorkspaceScreen(
                                     files = uiState.workspaceFiles,
                                     onCreateFile = { name, content ->
                                         viewModel.createWorkspaceFile(name, content)
                                     },
+                                    onRenameFile = { oldName, newName ->
+                                        viewModel.renameWorkspaceFile(oldName, newName)
+                                    },
                                     onDeleteFile = { name ->
                                         viewModel.deleteWorkspaceFile(name)
                                     },
+                                    onImportFile = { name, bytes ->
+                                        viewModel.importWorkspaceFile(name, bytes)
+                                    },
+                                    onExportProjectZip = { file, onComplete ->
+                                        viewModel.exportProjectZip(file, onComplete)
+                                    },
                                     onSendCodeToChat = { prompt ->
                                         viewModel.sendQuickPrompt(prompt)
+                                    },
+                                    onRunInTerminal = { filename, _ ->
+                                        terminalInitialFile = filename
+                                        viewModel.navigateTo(AppScreen.TERMINAL)
                                     },
                                     onNavigate = { target -> viewModel.navigateTo(target) },
                                     onBack = { viewModel.navigateBack() }
@@ -204,6 +237,12 @@ class MainActivity : ComponentActivity() {
                                     connectionStatus = uiState.connectionStatus,
                                     onSaveSettings = { newSettings ->
                                         viewModel.updateSettings(newSettings)
+                                    },
+                                    onSliderChange = { key, value ->
+                                        viewModel.updateSliderParameter(key, value)
+                                    },
+                                    onSystemInstructionChange = { text ->
+                                        viewModel.updateSystemInstruction(text)
                                     },
                                     onCheckConnection = {
                                         viewModel.checkConnection()

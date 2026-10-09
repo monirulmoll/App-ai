@@ -88,6 +88,8 @@ fun SettingsScreen(
     onCheckConnection: () -> Unit,
     onNavigate: (AppScreen) -> Unit,
     onBack: () -> Unit,
+    onSliderChange: (String, Number) -> Unit = { _, _ -> },
+    onSystemInstructionChange: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     BackHandler { onBack() }
@@ -479,12 +481,16 @@ fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("Temperature: ${((temperature * 10).roundToInt() / 10f)}", fontSize = 12.sp)
+                            Text("Temperature: ${((temperature * 100).roundToInt() / 100f)}", fontSize = 12.sp)
                             Text(if (temperature < 0.4f) "Precise" else if (temperature < 0.8f) "Balanced" else "Creative", fontSize = 11.sp, color = GeminiBlue)
                         }
                         Slider(
                             value = temperature,
                             onValueChange = { temperature = it },
+                            onValueChangeFinished = {
+                                val exactTemp = (temperature * 100).roundToInt() / 100f
+                                onSliderChange("temperature", exactTemp)
+                            },
                             valueRange = 0.1f..1.2f,
                             colors = SliderDefaults.colors(thumbColor = GeminiBlue, activeTrackColor = GeminiBlue)
                         )
@@ -501,6 +507,9 @@ fun SettingsScreen(
                         Slider(
                             value = maxTokens.toFloat(),
                             onValueChange = { maxTokens = it.roundToInt() },
+                            onValueChangeFinished = {
+                                onSliderChange("max_tokens", maxTokens)
+                            },
                             valueRange = 256f..4096f,
                             steps = 14,
                             colors = SliderDefaults.colors(thumbColor = GeminiPurple, activeTrackColor = GeminiPurple)
@@ -518,6 +527,9 @@ fun SettingsScreen(
                         Slider(
                             value = timeoutSeconds.toFloat(),
                             onValueChange = { timeoutSeconds = it.roundToInt() },
+                            onValueChangeFinished = {
+                                onSliderChange("timeout", timeoutSeconds)
+                            },
                             valueRange = 15f..120f,
                             steps = 6,
                             colors = SliderDefaults.colors(thumbColor = GeminiCyan, activeTrackColor = GeminiCyan)
@@ -544,7 +556,10 @@ fun SettingsScreen(
 
                         OutlinedTextField(
                             value = systemInstruction,
-                            onValueChange = { systemInstruction = it },
+                            onValueChange = {
+                                systemInstruction = it
+                                onSystemInstructionChange(it)
+                            },
                             minLines = 3,
                             maxLines = 6,
                             modifier = Modifier.fillMaxWidth(),

@@ -27,6 +27,26 @@ Gemo AI is a professional AI Studio-style application builder on Android paired 
 /
 ├── /agent/
 │   ├── /config/
+│   │   ├── /settings/
+│   │   │   ├── max_tokens: integer (slider value, e.g. 2048)
+│   │   │   ├── temperature: float (slider value, e.g. 0.70)
+│   │   │   ├── timeout: integer (slider value in seconds, e.g. 60)
+│   │   │   ├── response_timeout_seconds: integer (e.g. 60)
+│   │   │   ├── system_instruction: string (active persona text)
+│   │   │   ├── agent_mode_enabled: boolean
+│   │   │   ├── memory_enabled: boolean
+│   │   │   ├── vision_enabled: boolean
+│   │   │   ├── translator_enabled: boolean
+│   │   │   ├── provider: string ("Qwen" | "Ollama" | "vLLM" | "Custom")
+│   │   │   ├── model_name: string
+│   │   │   └── updated_at: integer (timestamp ms)
+│   │   ├── /parameters/
+│   │   │   ├── max_tokens: integer (exact number from slider)
+│   │   │   ├── temperature: float (exact number from slider)
+│   │   │   ├── timeout: integer (exact number in seconds)
+│   │   │   ├── response_timeout_seconds: integer
+│   │   │   └── updated_at: integer (timestamp ms)
+│   │   ├── system_instruction: string (direct system prompt)
 │   │   ├── /features/
 │   │   │   ├── app_building: boolean
 │   │   │   ├── script_generation: boolean
@@ -51,6 +71,7 @@ Gemo AI is a professional AI Studio-style application builder on Android paired 
 │   │       ├── timeout_seconds: integer
 │   │       ├── max_file_size_mb: integer
 │   │       └── auto_error_repair_depth: integer
+│   ├── instruction: string (alias to system instruction)
 │   ├── /status/
 │   │   ├── online: boolean
 │   │   ├── last_heartbeat: integer (timestamp ms)
@@ -74,6 +95,19 @@ Gemo AI is a professional AI Studio-style application builder on Android paired 
 │           ├── created_at: integer (timestamp ms)
 │           ├── updated_at: integer (timestamp ms)
 │           └── completed_at: integer (timestamp ms)
+├── /settings/
+│   ├── max_tokens: integer (slider number, e.g. 2048)
+│   ├── temperature: float (slider number, e.g. 0.70)
+│   ├── timeout: integer (slider number in seconds, e.g. 60)
+│   ├── system_instruction: string (system prompt / persona)
+│   ├── updated_at: integer (timestamp ms)
+│   └── /parameters/
+│       ├── max_tokens: integer
+│       ├── temperature: float
+│       └── timeout: integer
+├── /model/
+│   ├── active: string (currently loaded GGUF model)
+│   └── request: string (model switch requested by client)
 ├── /conversations/
 │   └── /{conversationId}/
 │       ├── id: string
@@ -173,7 +207,84 @@ Gemo AI is a professional AI Studio-style application builder on Android paired 
 
 ---
 
-### 2.2 Task Lifecycle & Correlated Execution
+### 2.2 Model Sliders, Hyperparameters & System Instruction Realtime Contract
+- **Path Templates**:
+  - Full Settings Map: `/agent/config/settings`
+  - Numeric Parameters Map: `/agent/config/parameters`
+  - Root Parameters Map: `/settings/parameters` & `/settings`
+  - Direct System Instruction Nodes:
+    - `/agent/config/system_instruction`
+    - `/agent/instruction`
+    - `/settings/system_instruction`
+  - Direct Slider Metric Nodes:
+    - `/agent/config/settings/max_tokens` (or `/agent/config/parameters/max_tokens` / `/settings/max_tokens`)
+    - `/agent/config/settings/temperature` (or `/agent/config/parameters/temperature` / `/settings/temperature`)
+    - `/agent/config/settings/timeout` (or `/agent/config/parameters/timeout` / `/settings/timeout`)
+- **Writer**: Android App (`SettingsScreen` sliders on drag finish + `Save` action, `FirebaseRtdbManager`).
+- **Reader**: `Autonomous.py` / Backend LLM inference engine.
+- **Data Types**:
+  - `max_tokens`: **Integer** (exact number from 256 to 4096, e.g., `2048`)
+  - `temperature`: **Float / Double** (exact float from 0.10 to 1.20, 2 decimals, e.g., `0.70`)
+  - `timeout` / `response_timeout_seconds`: **Integer** (exact seconds from 15 to 120, e.g., `60`)
+  - `system_instruction`: **String** (exact prompt / persona instructions entered in Settings)
+
+#### Example Full Payload (`/agent/config/settings`):
+```json
+{
+  "max_tokens": 2048,
+  "temperature": 0.70,
+  "timeout": 60,
+  "response_timeout_seconds": 60,
+  "system_instruction": "You are Gemo AI, an intelligent coding and autonomous agent assistant.",
+  "provider": "Qwen",
+  "model_name": "qwen2.5-coder-7b-instruct.Q4_K_M.gguf",
+  "agent_mode_enabled": true,
+  "memory_enabled": true,
+  "vision_enabled": true,
+  "translator_enabled": true,
+  "speech_input_language": "auto",
+  "updated_at": 1728460020000
+}
+```
+
+#### Example Fast Parameters Payload (`/agent/config/parameters`):
+```json
+{
+  "max_tokens": 2048,
+  "temperature": 0.70,
+  "timeout": 60,
+  "response_timeout_seconds": 60,
+  "updated_at": 1728460020000
+}
+```
+
+#### Example Dedicated System Instruction (`/agent/config/system_instruction` or `/agent/instruction`):
+```text
+"You are Gemo AI, an intelligent coding and autonomous agent assistant."
+```
+
+#### Python Reading Example for Backend (`Autonomous.py`):
+```python
+import requests
+
+FIREBASE_URL = "https://your-project-rtdb.firebaseio.com"
+
+# 1. Read all generation parameters in one call:
+params = requests.get(f"{FIREBASE_URL}/agent/config/parameters.json").json() or {}
+max_tokens = int(params.get("max_tokens", 2048))
+temperature = float(params.get("temperature", 0.7))
+timeout = int(params.get("timeout", 60))
+
+# 2. Read active system instruction:
+sys_instruction = requests.get(f"{FIREBASE_URL}/agent/config/system_instruction.json").json() or "You are Gemo AI."
+
+print(f"Loaded config: tokens={max_tokens}, temp={temperature}, timeout={timeout}s")
+print(f"System instruction: {sys_instruction}")
+```
+
+---
+
+### 2.3 Task Lifecycle & Correlated Execution
 - **Path Template**: `/agent/tasks/{taskId}`
 - **Writer**:
   - Android App creates task with status `"QUEUED"`
@@ -406,3 +517,66 @@ if __name__ == "__main__":
    - Requests deduplicated via `requestId` in memory and RTDB.
 4. **Artifact Delivery**:
    - Generated APK binary outputs are stored at designated artifact URLs or local filesystem exports (`APK_DOWNLOAD/app-debug.apk`) with verified size and MD5 hash tracking.
+
+---
+
+## 6. Real Terminal & Termux Execution Contract
+
+### 6.1 Terminal Command Path
+- **Path**: `/agent/terminal/commands/{commandId}`
+- **Writer**: Android Client (Terminal Screen or Code Workspace "Run" button)
+- **Reader**: `Autonomous.py` Backend Runner
+```json
+{
+  "id": "cmd_12345",
+  "command": "python3 main.py",
+  "language": "python",
+  "filename": "main.py",
+  "code": "print('hello world')",
+  "status": "PENDING",
+  "timestamp": 1728460000000
+}
+```
+
+### 6.2 Terminal Live Output Path
+- **Path**: `/agent/terminal/output/{commandId}`
+- **Writer**: `Autonomous.py` Backend Runner
+- **Reader**: Android Client (Streams to Terminal Screen in real time)
+```json
+{
+  "command_id": "cmd_12345",
+  "stdout": "Hello World from Gemo AI Studio!\n",
+  "stderr": "",
+  "exit_code": 0,
+  "status": "COMPLETED",
+  "timestamp": 1728460002000
+}
+```
+
+### 6.3 Workspace File Synchronization Path
+- **Path**: `/workspace/files/{fileKey}`
+- When an app is built via Chat ("Make a hello world app"), the backend writes all project files here.
+- The Android Client automatically reflects them in the **Edit Code** left sidebar.
+- The user can rename, add, import, download single files, or download the whole project as a `.zip` archive.
+
+### 6.4 Instant Message Transmission & Real Termux Terminal
+- **Zero-Latency Message Dispatch**: When user sends a message, it is written immediately to Firebase RTDB (`conversations/{id}/messages/{msgId}`) without pre-translation HTTP blocking or token streaming delays.
+- **Atomic AI Completions**: Complete responses and generated files (`main.py`, `hello.cpp`, etc.) are committed in atomic batches directly to `/workspace/files/` and reflected instantly in the Edit Code workspace.
+- **Workable Termux Terminal**: Real Android shell process execution (`/system/bin/sh`) inside `gemo_workspace` with support for Termux commands (`ls`, `pwd`, `cd`, `cat`, `mkdir`, `rm`, `touch`, `ps`, `whoami`, `uname`) and Termux accessory keys (`ESC`, `TAB`, `CTRL`, `ALT`, `-`, `/`, `|`, `~`, `↑`, `↓`), paired with automatic fallback to `Autonomous.py` for Python and C++ compilation.
+- **Fullscreen Chat**: Chat view is 100% full screen with no bottom navigation bar, with intuitive Back button and BackHandler navigation.
+
+### 6.5 How to Launch the Python Backend on PC / Termux
+1. **Clone or transfer repository**:
+   ```bash
+   cd App-ai
+   ```
+2. **Install tooling dependencies**:
+   ```bash
+   python Setup.py
+   ```
+3. **Run the Autonomous Core**:
+   ```bash
+   python Autonomous.py --firebase-url "https://YOUR-PROJECT-rtdb.firebaseio.com"
+   ```
+All Python scripts, C++ compilations (`g++`), shell commands, and app generations will execute natively on your backend and results sync live to the Android app!
+

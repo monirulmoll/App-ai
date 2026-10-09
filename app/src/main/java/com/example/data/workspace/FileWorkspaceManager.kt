@@ -8,10 +8,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class FileWorkspaceManager(private val context: Context) {
 
-    private val workspaceDir: File = File(context.filesDir, "gemo_workspace").apply {
+    val workspaceDir: File = File(context.filesDir, "gemo_workspace").apply {
         if (!exists()) mkdirs()
     }
 
@@ -19,38 +23,23 @@ class FileWorkspaceManager(private val context: Context) {
     val files: StateFlow<List<WorkspaceFile>> = _files.asStateFlow()
 
     init {
-        seedInitialFilesIfEmpty()
+        cleanupDemoFilesIfPresent()
         refreshFiles()
     }
 
-    private fun seedInitialFilesIfEmpty() {
-        val existing = workspaceDir.listFiles()
-        if (existing.isNullOrEmpty()) {
-            val welcomePy = File(workspaceDir, "welcome.py")
-            welcomePy.writeText(
-                """# Welcome to Gemo AI Code Workspace!
-# Created by Rohit
-# You can view, edit, run, and ask Gemo to analyze or modify files.
-
-def greet_gemo(user_name="Friend"):
-    message = f"Hello {user_name}! I am Gemo AI, created by Rohit."
-    print(message)
-    return message
-
-if __name__ == "__main__":
-    greet_gemo()
-""".trimIndent()
-            )
-
-            val notesMd = File(workspaceDir, "project_notes.md")
-            notesMd.writeText(
-                """# Gemo AI Next-Gen Workspace
-- Creator: Rohit
-- Multi-Model Support: Active
-- Vision & Image Understanding: Ready
-- Sandboxed File Tools: Enabled
-""".trimIndent()
-            )
+    /**
+     * Ensures NO demo, fake, or placeholder files are pre-loaded into the workspace.
+     */
+    private fun cleanupDemoFilesIfPresent() {
+        val demoFiles = listOf("welcome.py", "project_notes.md")
+        demoFiles.forEach { name ->
+            val target = File(workspaceDir, name)
+            if (target.exists()) {
+                val text = try { target.readText() } catch (_: Exception) { "" }
+                if (text.contains("Welcome to Gemo AI Code Workspace") || text.contains("Gemo AI Next-Gen Workspace")) {
+                    target.delete()
+                }
+            }
         }
     }
 
@@ -60,7 +49,7 @@ if __name__ == "__main__":
             if (file.isFile) {
                 val ext = file.extension.lowercase()
                 val preview = try {
-                    file.readText().take(500)
+                    file.readText()
                 } catch (_: Exception) {
                     ""
                 }
@@ -75,7 +64,7 @@ if __name__ == "__main__":
                 )
             }
         }
-        _files.value = list.sortedByDescending { it.lastModified }
+        _files.value = list.sortedBy { it.filename.lowercase() }
     }
 
     private fun sanitizeFilename(rawName: String): String {
@@ -83,10 +72,9 @@ if __name__ == "__main__":
         return clean.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifEmpty { "file.txt" }
     }
 
-    private fun getSafeFile(filename: String): File {
+    fun getSafeFile(filename: String): File {
         val safeName = sanitizeFilename(filename)
         val target = File(workspaceDir, safeName)
-        // Ensure path traversal defense
         val canonical = target.canonicalPath
         val baseCanonical = workspaceDir.canonicalPath
         if (!canonical.startsWith(baseCanonical)) {
@@ -114,6 +102,57 @@ if __name__ == "__main__":
         }
     }
 
+    suspend fun importFile(filename: String, bytes: ByteArray): Result<WorkspaceFile> = withContext(Dispatchers.IO) {
+        try {
+            val target = getSafeFile(filename)
+            target.writeBytes(bytes)
+            val content = try { target.readText() } catch (_: Exception) { "[Binary file]" }
+            refreshFiles()
+            Result.success(
+                WorkspaceFile(
+                    filename = target.name,
+                    extension = target.extension,
+                    sizeBytes = target.length(),
+                    lastModified = target.lastModified(),
+                    content = content
+                )
+            )
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun renameFile(oldFilename: String, newFilename: String): Result<WorkspaceFile> = withContext(Dispatchers.IO) {
+        try {
+            val oldFile = getSafeFile(oldFilename)
+            if (!oldFile.exists()) {
+                return@withContext Result.failure(NoSuchFileException(oldFile, null, "File does not exist: $oldFilename"))
+            }
+            val newFile = getSafeFile(newFilename)
+            if (newFile.exists() && newFile.canonicalPath != oldFile.canonicalPath) {
+                return@withContext Result.failure(IllegalArgumentException("Target filename already exists: $newFilename"))
+            }
+            val content = oldFile.readText()
+            val renamed = oldFile.renameTo(newFile)
+            if (!renamed) {
+                newFile.writeText(content)
+                oldFile.delete()
+            }
+            refreshFiles()
+            Result.success(
+                WorkspaceFile(
+                    filename = newFile.name,
+                    extension = newFile.extension,
+                    sizeBytes = newFile.length(),
+                    lastModified = newFile.lastModified(),
+                    content = content
+                )
+            )
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun readFile(filename: String): Result<String> = withContext(Dispatchers.IO) {
         try {
             val target = getSafeFile(filename)
@@ -133,6 +172,32 @@ if __name__ == "__main__":
             val deleted = target.delete()
             refreshFiles()
             Result.success(deleted)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Exports all workspace files as a ZIP archive for whole-project download.
+     */
+    suspend fun exportProjectZip(outputZipFile: File): Result<File> = withContext(Dispatchers.IO) {
+        try {
+            outputZipFile.parentFile?.mkdirs()
+            ZipOutputStream(FileOutputStream(outputZipFile)).use { zos ->
+                val allFiles = workspaceDir.listFiles() ?: emptyArray()
+                for (file in allFiles) {
+                    if (file.isFile) {
+                        val entry = ZipEntry(file.name)
+                        entry.time = file.lastModified()
+                        zos.putNextEntry(entry)
+                        FileInputStream(file).use { fis ->
+                            fis.copyTo(zos)
+                        }
+                        zos.closeEntry()
+                    }
+                }
+            }
+            Result.success(outputZipFile)
         } catch (e: Exception) {
             Result.failure(e)
         }

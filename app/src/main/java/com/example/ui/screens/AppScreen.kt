@@ -8,6 +8,7 @@ enum class AppScreen(val title: String, val route: String) {
     CONVERSATIONS("Conversations", "conversations"),
     IMAGE_GEN("Image Studio", "image_gen"),
     VISION("Vision Analysis", "vision"),
+    TERMINAL("Terminal", "terminal"),
     CODE_WORKSPACE("Code Workspace", "code_workspace"),
     FILE_MANAGER("File Manager", "file_manager"),
     AGENT_MODE("AI Agent Mode", "agent_mode"),

@@ -13,6 +13,7 @@ import com.example.data.model.LlmSettings
 import com.example.data.model.UserMemory
 import com.example.data.model.WorkspaceFile
 import com.example.data.router.RequestRouter
+import com.example.data.terminal.NativeTerminalExecutor
 import com.example.data.translator.TranslatorHelper
 import com.example.data.workspace.FileWorkspaceManager
 import kotlinx.coroutines.CoroutineScope
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 private data class RequestLangInfo(
@@ -36,6 +38,7 @@ class ChatRepository(context: Context) {
     val workspaceManager = FileWorkspaceManager(context)
     val memoryManager = MemoryManager(context, prefs)
     val toolEngine = AgentToolEngine(workspaceManager, memoryManager)
+    val nativeTerminal = NativeTerminalExecutor(context)
 
     private val scope = CoroutineScope(Dispatchers.Main)
     private val requestLanguageMap = mutableMapOf<String, RequestLangInfo>()
@@ -117,6 +120,9 @@ class ChatRepository(context: Context) {
         val initialGguf = LlmSettings.ensureGgufFilename(currentSettings.modelName)
         rtdbManager.requestModelSwitch(initialGguf)
 
+        // Sync initial settings & features to RTDB
+        rtdbManager.syncSettingsToRtdb(currentSettings)
+
         // Sync initial memories to RTDB if connected
         scope.launch {
             memoryManager.memories.collect { memList ->
@@ -186,6 +192,9 @@ class ChatRepository(context: Context) {
             _currentConversation.value?.id
         )
 
+        // Sync all settings & button states to Firebase RTDB for backend
+        rtdbManager.syncSettingsToRtdb(newSettings)
+
         if (oldUrl != newSettings.firebaseUrl) {
             rtdbManager.initialize(newSettings.firebaseUrl)
             _currentConversation.value?.let { conv ->
@@ -197,6 +206,28 @@ class ChatRepository(context: Context) {
     fun toggleAgentMode(enabled: Boolean) {
         val updated = _settings.value.copy(agentModeEnabled = enabled)
         updateSettings(updated)
+    }
+
+    fun updateSliderParameter(paramKey: String, value: Number) {
+        // Update local settings in-memory
+        val current = _settings.value
+        val updated = when (paramKey) {
+            "max_tokens" -> current.copy(maxTokens = value.toInt())
+            "temperature" -> current.copy(temperature = value.toFloat())
+            "timeout", "response_timeout_seconds" -> current.copy(responseTimeoutSeconds = value.toInt())
+            else -> current
+        }
+        _settings.value = updated
+        prefs.saveSettings(updated)
+        rtdbManager.syncSliderParameter(paramKey, value)
+    }
+
+    fun updateSystemInstruction(instruction: String) {
+        val current = _settings.value
+        val updated = current.copy(systemInstruction = instruction)
+        _settings.value = updated
+        prefs.saveSettings(updated)
+        rtdbManager.syncSystemInstruction(instruction)
     }
 
     fun checkConnection() {
@@ -370,6 +401,20 @@ class ChatRepository(context: Context) {
                 }
             }
 
+            if (incoming.isAi && processedMessage.text.isNotBlank()) {
+                val userPrompt = userOriginalTextMap[processedMessage.requestId] ?: ""
+                val extracted = com.example.data.workspace.WorkspaceFileExtractor.extractFiles(processedMessage.text, userPrompt)
+                if (extracted.isNotEmpty()) {
+                    val fileNames = extracted.map { it.filename }
+                    processedMessage = processedMessage.copy(generatedFiles = fileNames)
+                    scope.launch {
+                        extracted.forEach { file ->
+                            createWorkspaceFile(file.filename, file.content)
+                        }
+                    }
+                }
+            }
+
             val currentList = _messages.value.toMutableList()
             val existingIndex = currentList.indexOfFirst {
                 it.messageId == processedMessage.messageId || (it.requestId.isNotEmpty() && it.requestId == processedMessage.requestId && it.sender == processedMessage.sender)
@@ -497,36 +542,14 @@ class ChatRepository(context: Context) {
         isCurrentlyGeneratingFlow.value = true
 
         scope.launch {
-            val messageToSend = if (_settings.value.translatorEnabled) {
-                val transResult = TranslatorHelper.translateToEnglish(trimmed.ifEmpty { "analyze image" })
-                val englishPrompt = transResult.translatedEnglish
-                val detectedLang = transResult.detectedLanguage
-                val isLatin = transResult.isLatinScript
-
-                val langInfo = RequestLangInfo(
-                    rawPrompt = trimmed,
-                    englishPrompt = englishPrompt,
-                    sourceLang = detectedLang,
-                    isLatinScript = isLatin
-                )
-                requestLanguageMap[reqId] = langInfo
-                lastActiveLanguageInfo = langInfo
-
-                userMessage.copy(
-                    text = englishPrompt,
-                    originalText = trimmed.ifEmpty { "[Image Attachment]" },
-                    sourceLang = detectedLang,
-                    status = "sent"
-                )
-            } else {
-                requestLanguageMap.remove(reqId)
-                userMessage.copy(
-                    text = trimmed.ifEmpty { "[Image Attachment]" },
-                    originalText = trimmed.ifEmpty { "[Image Attachment]" },
-                    sourceLang = "auto",
-                    status = "sent"
-                )
-            }
+            // Immediate zero-latency database transmission:
+            // Send user message directly to Firebase RTDB without any blocking HTTP translation call.
+            val messageToSend = userMessage.copy(
+                text = trimmed.ifEmpty { "[Image Attachment]" },
+                originalText = trimmed.ifEmpty { "[Image Attachment]" },
+                sourceLang = "auto",
+                status = "sent"
+            )
 
             rtdbManager.sendMessage(
                 message = messageToSend,
@@ -753,12 +776,104 @@ class ChatRepository(context: Context) {
         return result
     }
 
+    suspend fun renameWorkspaceFile(oldFilename: String, newFilename: String): Result<WorkspaceFile> {
+        val result = workspaceManager.renameFile(oldFilename, newFilename)
+        result.getOrNull()?.let { rtdbManager.syncWorkspaceFile(it) }
+        return result
+    }
+
+    suspend fun importWorkspaceFile(filename: String, bytes: ByteArray): Result<WorkspaceFile> {
+        val result = workspaceManager.importFile(filename, bytes)
+        result.getOrNull()?.let { rtdbManager.syncWorkspaceFile(it) }
+        return result
+    }
+
+    suspend fun exportProjectZip(outputZipFile: java.io.File): Result<java.io.File> {
+        return workspaceManager.exportProjectZip(outputZipFile)
+    }
+
     suspend fun deleteWorkspaceFile(filename: String): Result<Boolean> {
         return workspaceManager.deleteFile(filename)
     }
 
     suspend fun readWorkspaceFile(filename: String): Result<String> {
         return workspaceManager.readFile(filename)
+    }
+
+    // Terminal Operations (Real Termux execution + Autonomous backend runner)
+    fun executeTerminalCommand(
+        command: String,
+        language: String = "shell",
+        filename: String? = null,
+        code: String? = null,
+        onOutput: (stdout: String, stderr: String, exitCode: Int, status: String) -> Unit
+    ): String {
+        val trimmed = command.trim()
+        val cmdId = "cmd_" + UUID.randomUUID().toString().take(10)
+
+        // If code is provided for a workspace file, ensure it is written locally first
+        if (!filename.isNullOrBlank() && !code.isNullOrBlank()) {
+            scope.launch {
+                workspaceManager.createOrUpdateFile(filename, code)
+            }
+        }
+
+        val isBackendConnected = isConnectedToRtdb.value && rtdbManager.isDatabaseReady
+        val isExplicitBackendLanguage = language == "python" || language == "cpp" || language == "c" ||
+                trimmed.startsWith("python ") || trimmed.startsWith("python3 ") ||
+                trimmed.startsWith("g++ ") || trimmed.startsWith("clang++ ")
+
+        if (isExplicitBackendLanguage && isBackendConnected) {
+            // Forward to Autonomous backend
+            return rtdbManager.sendTerminalCommand(command, language, filename, code, onOutput)
+        }
+
+        // Run on local device shell (Termux-compatible native shell runner)
+        scope.launch(Dispatchers.IO) {
+            val result = nativeTerminal.executeCommand(trimmed) { outLine, errLine ->
+                if (outLine != null) onOutput(outLine, "", 0, "RUNNING")
+                if (errLine != null) onOutput("", errLine, 0, "RUNNING")
+            }
+
+            // Check if user tried to run python3/g++ but it's not on Android device shell
+            if (result.exitCode == 127 && (trimmed.startsWith("python") || trimmed.startsWith("g++"))) {
+                if (isBackendConnected) {
+                    withContext(Dispatchers.Main) {
+                        onOutput("", "[Termux notice: python3/g++ not found on local device, redirecting to Autonomous.py backend...]\n", 0, "RUNNING")
+                        rtdbManager.sendTerminalCommand(command, language, filename, code, onOutput)
+                    }
+                    return@launch
+                } else {
+                    val helpMsg = "\n[Termux Shell: command not found: ${trimmed.substringBefore(' ')}]\n" +
+                            "To execute Python or C++ scripts:\n" +
+                            "  1) Connect Firebase in Settings to run via Autonomous.py\n" +
+                            "  2) Or run in Termux app (`pkg install python`)\n"
+                    withContext(Dispatchers.Main) {
+                        onOutput(result.stdout, result.stderr + helpMsg, 127, "ERROR")
+                    }
+                    return@launch
+                }
+            }
+
+            // If the command modified files (e.g. touch, rm, echo > file), refresh workspace
+            workspaceManager.refreshFiles()
+
+            withContext(Dispatchers.Main) {
+                onOutput(
+                    result.stdout,
+                    result.stderr,
+                    result.exitCode,
+                    if (result.exitCode == 0) "COMPLETED" else "ERROR"
+                )
+            }
+        }
+
+        return cmdId
+    }
+
+    fun cancelTerminalCommand(commandId: String) {
+        nativeTerminal.killActiveProcess()
+        rtdbManager.cancelTerminalCommand(commandId)
     }
 
     fun addMemory(content: String, category: String = "custom"): UserMemory {

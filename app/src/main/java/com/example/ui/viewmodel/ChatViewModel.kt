@@ -370,6 +370,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _showSettingsDialog.value = false
     }
 
+    fun updateSliderParameter(paramKey: String, value: Number) {
+        repository.updateSliderParameter(paramKey, value)
+    }
+
+    fun updateSystemInstruction(instruction: String) {
+        repository.updateSystemInstruction(instruction)
+    }
+
     fun setShowWorkspaceDialog(show: Boolean) {
         _showWorkspaceDialog.value = show
     }
@@ -395,10 +403,43 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun renameWorkspaceFile(oldFilename: String, newFilename: String) {
+        viewModelScope.launch {
+            repository.renameWorkspaceFile(oldFilename, newFilename)
+        }
+    }
+
+    fun importWorkspaceFile(filename: String, bytes: ByteArray) {
+        viewModelScope.launch {
+            repository.importWorkspaceFile(filename, bytes)
+        }
+    }
+
+    fun exportProjectZip(outputZipFile: java.io.File, onComplete: (Result<java.io.File>) -> Unit) {
+        viewModelScope.launch {
+            val result = repository.exportProjectZip(outputZipFile)
+            onComplete(result)
+        }
+    }
+
     fun deleteWorkspaceFile(filename: String) {
         viewModelScope.launch {
             repository.deleteWorkspaceFile(filename)
         }
+    }
+
+    fun executeTerminalCommand(
+        command: String,
+        language: String = "shell",
+        filename: String? = null,
+        code: String? = null,
+        onOutput: (stdout: String, stderr: String, exitCode: Int, status: String) -> Unit
+    ): String {
+        return repository.executeTerminalCommand(command, language, filename, code, onOutput)
+    }
+
+    fun cancelTerminalCommand(commandId: String) {
+        repository.cancelTerminalCommand(commandId)
     }
 
     fun addMemory(content: String, category: String = "custom") {

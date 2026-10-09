@@ -180,6 +180,10 @@ fun ChatScreen(
         }
     }
 
+    BackHandler {
+        viewModel.navigateBack()
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -227,11 +231,12 @@ fun ChatScreen(
                     connectionStatus = uiState.connectionStatus,
                     onOpenDrawer = { scope.launch { drawerState.open() } },
                     onOpenSettings = { viewModel.setShowSettingsDialog(true) },
-                    onOpenWorkspace = { viewModel.setShowWorkspaceDialog(true) },
+                    onOpenWorkspace = { viewModel.navigateTo(AppScreen.CODE_WORKSPACE) },
                     onOpenMemory = { viewModel.setShowMemoryDialog(true) },
                     onNewChat = { viewModel.startNewChat() },
                     onCheckConnection = { viewModel.checkConnection() },
-                    onClearChat = { viewModel.clearChat() }
+                    onClearChat = { viewModel.clearChat() },
+                    onBack = { viewModel.navigateBack() }
                 )
             }
         ) { paddingValues ->

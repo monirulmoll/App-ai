@@ -3,10 +3,11 @@ package com.example.ui.components
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -34,9 +35,11 @@ fun GemoBottomNavBar(
     modifier: Modifier = Modifier
 ) {
     val items = listOf(
-        NavItem(AppScreen.HOME, "Home", Icons.Default.Home),
+        NavItem(AppScreen.CHAT, "Chat", Icons.AutoMirrored.Filled.Chat),
+        NavItem(AppScreen.CODE_WORKSPACE, "Edit Code", Icons.Default.Code),
+        NavItem(AppScreen.TERMINAL, "Terminal", Icons.Default.Terminal),
         NavItem(AppScreen.AGENT_MODE, "Agent", Icons.Default.SmartToy),
-        NavItem(AppScreen.SETTINGS, "Setting", Icons.Default.Settings)
+        NavItem(AppScreen.SETTINGS, "Settings", Icons.Default.Settings)
     )
 
     NavigationBar(
