@@ -117,7 +117,16 @@ object TranslatorHelper {
         "apnar naam ki" to "what is your name",
         "tomar naam ki" to "what is your name",
         "apka naam kya hai" to "what is your name",
-        "tera naam kya hai" to "what is your name"
+        "tera naam kya hai" to "what is your name",
+        "kaise ho tum" to "how are you",
+        "hu" to "I am listening",
+        "hoon" to "I am listening",
+        "haan" to "yes",
+        "ha" to "yes",
+        "theek hai" to "all right",
+        "theek" to "all right",
+        "acha" to "okay",
+        "achha" to "okay"
     )
 
     /**
@@ -174,7 +183,8 @@ object TranslatorHelper {
             val lang = when {
                 hasBengali || cleanLow.contains("tumi") || cleanLow.contains("tomake") || cleanLow.contains("acho") ||
                         cleanLow.contains("baniyeche") || cleanLow.contains("banieche") || cleanLow.contains("achen") || cleanLow.contains("kemon") -> "bn"
-                hasDevanagari || cleanLow.contains("tumhe") || cleanLow.contains("banaya") || cleanLow.contains("kaun") ||
+                hasDevanagari || cleanLow in setOf("hu", "hoon", "haan", "ha", "theek", "theek hai", "acha", "achha") ||
+                        cleanLow.contains("tumhe") || cleanLow.contains("banaya") || cleanLow.contains("kaun") ||
                         cleanLow.contains("kaise") || cleanLow.contains("kya") -> "hi"
                 else -> "en"
             }

@@ -27,6 +27,7 @@ class LocalChatPreferences(context: Context) {
         private const val KEY_VISION_ENABLED = "vision_enabled"
         private const val KEY_SYSTEM_INSTRUCTION = "system_instruction"
         private const val KEY_SPEECH_LANG = "speech_input_language"
+        private const val KEY_TRANSLATOR_ENABLED = "translator_enabled"
         private const val KEY_ACTIVE_CONV = "active_conversation_id"
         private const val KEY_CONVERSATIONS = "conversations_json"
         private const val PREFIX_MESSAGES = "conv_messages_"
@@ -54,7 +55,8 @@ class LocalChatPreferences(context: Context) {
             visionEnabled = prefs.getBoolean(KEY_VISION_ENABLED, true),
             systemInstruction = prefs.getString(KEY_SYSTEM_INSTRUCTION, LlmSettings.DEFAULT_SYSTEM_INSTRUCTION)
                 ?: LlmSettings.DEFAULT_SYSTEM_INSTRUCTION,
-            speechInputLanguage = prefs.getString(KEY_SPEECH_LANG, "auto") ?: "auto"
+            speechInputLanguage = prefs.getString(KEY_SPEECH_LANG, "auto") ?: "auto",
+            translatorEnabled = prefs.getBoolean(KEY_TRANSLATOR_ENABLED, true)
         )
     }
 
@@ -73,6 +75,7 @@ class LocalChatPreferences(context: Context) {
             .putBoolean(KEY_VISION_ENABLED, settings.visionEnabled)
             .putString(KEY_SYSTEM_INSTRUCTION, settings.systemInstruction)
             .putString(KEY_SPEECH_LANG, settings.speechInputLanguage)
+            .putBoolean(KEY_TRANSLATOR_ENABLED, settings.translatorEnabled)
             .apply()
     }
 
@@ -312,5 +315,31 @@ class LocalChatPreferences(context: Context) {
 
     fun setFontScale(scale: Float) {
         prefs.edit().putFloat(KEY_FONT_SCALE, scale).apply()
+    }
+
+    fun getAgentFeatures(): Map<String, Boolean> {
+        val json = prefs.getString("agent_features_config", null) ?: return com.example.data.model.AgentFeatureKey.ALL_DEFAULT_FEATURES
+        return try {
+            val obj = JSONObject(json)
+            val map = mutableMapOf<String, Boolean>()
+            com.example.data.model.AgentFeatureKey.values().forEach { key ->
+                map[key.key] = obj.optBoolean(key.key, true)
+            }
+            map
+        } catch (_: Exception) {
+            com.example.data.model.AgentFeatureKey.ALL_DEFAULT_FEATURES
+        }
+    }
+
+    fun saveAgentFeature(key: String, enabled: Boolean) {
+        val current = getAgentFeatures().toMutableMap()
+        current[key] = enabled
+        saveAgentFeatures(current)
+    }
+
+    fun saveAgentFeatures(features: Map<String, Boolean>) {
+        val obj = JSONObject()
+        features.forEach { (k, v) -> obj.put(k, v) }
+        prefs.edit().putString("agent_features_config", obj.toString()).apply()
     }
 }

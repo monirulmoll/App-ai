@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.screens.AgentDashboardScreen
+import com.example.ui.screens.AgentSectionScreen
 import com.example.ui.screens.AppScreen
 import com.example.ui.screens.BackendStatusScreen
 import com.example.ui.screens.ChatScreen
@@ -139,13 +140,20 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             AppScreen.AGENT_MODE -> {
-                                AgentDashboardScreen(
+                                AgentSectionScreen(
                                     isAgentMode = uiState.isAgentMode,
                                     onToggleAgentMode = { viewModel.toggleAgentMode() },
-                                    onNavigate = { target -> viewModel.navigateTo(target) },
-                                    onSendPromptToChat = { prompt ->
+                                    workspaceFiles = uiState.workspaceFiles,
+                                    onCreateWorkspaceFile = { name: String, content: String ->
+                                        viewModel.createWorkspaceFile(name, content)
+                                    },
+                                    onDeleteWorkspaceFile = { name: String ->
+                                        viewModel.deleteWorkspaceFile(name)
+                                    },
+                                    onSendPromptToChat = { prompt: String ->
                                         viewModel.sendQuickPrompt(prompt)
                                     },
+                                    onNavigate = { target: AppScreen -> viewModel.navigateTo(target) },
                                     onBack = { viewModel.navigateBack() }
                                 )
                             }

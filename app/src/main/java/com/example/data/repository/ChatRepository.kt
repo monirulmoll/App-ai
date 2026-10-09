@@ -68,6 +68,9 @@ class ChatRepository(context: Context) {
 
     // Track active request ID currently awaiting AI response
     private var pendingRequestId: String? = null
+    val isCurrentlyGeneratingFlow = MutableStateFlow(false)
+    val isCurrentlyGenerating: Boolean get() = isCurrentlyGeneratingFlow.value
+    private val stoppedRequestIds = mutableSetOf<String>()
 
     init {
         // Initialize Firebase with current saved URL
@@ -290,21 +293,40 @@ class ChatRepository(context: Context) {
                     ?: incoming.text
                 processedMessage = incoming.copy(text = original, originalText = original)
             } else if (incoming.isAi) {
-                val langInfo = requestLanguageMap[incoming.requestId] ?: lastActiveLanguageInfo
-                val rawPrompt = langInfo?.rawPrompt ?: _messages.value.lastOrNull { it.isUser }?.let { it.originalText ?: it.text } ?: ""
-                val engPrompt = langInfo?.englishPrompt ?: _messages.value.lastOrNull { it.isUser }?.text ?: ""
-                val targetLang = langInfo?.sourceLang ?: _messages.value.lastOrNull { it.isUser }?.sourceLang ?: "en"
-                val isLatin = langInfo?.isLatinScript ?: TranslatorHelper.isMostlyLatin(rawPrompt)
-
-                val existingMsg = _messages.value.find {
+                val currentList = _messages.value
+                val existingMsg = currentList.find {
                     it.messageId == incoming.messageId ||
                     (incoming.requestId.isNotEmpty() && it.requestId == incoming.requestId && it.isAi)
                 }
+
+                // If user stopped this request, clamp status to completed and never resurrect generating
+                val isStopped = (incoming.requestId.isNotEmpty() && stoppedRequestIds.contains(incoming.requestId)) ||
+                        (!isCurrentlyGenerating && incoming.requestId != pendingRequestId && (existingMsg?.status == "completed"))
+                val currentStatus = if (isStopped) "completed" else incoming.status
+
                 val requestedModel = existingMsg?.model?.takeIf { it.isNotBlank() }
                     ?: _currentConversation.value?.model?.takeIf { it.isNotBlank() }
                     ?: _settings.value.modelName
 
-                if (incoming.text.isNotEmpty()) {
+                val isHistorical = (incoming.requestId != pendingRequestId && incoming.requestId.isNotEmpty() && existingMsg != null && existingMsg.status == "completed")
+
+                if (isHistorical) {
+                    // Do NOT re-translate historical messages! Keep existing text to prevent screen-opening glitch
+                    processedMessage = incoming.copy(
+                        text = existingMsg.text.ifBlank { incoming.text },
+                        originalText = existingMsg.originalText ?: incoming.originalText,
+                        model = requestedModel,
+                        status = "completed",
+                        toolCall = incoming.toolCall ?: existingMsg.toolCall,
+                        toolResult = incoming.toolResult ?: existingMsg.toolResult
+                    )
+                } else if (incoming.text.isNotEmpty()) {
+                    val langInfo = requestLanguageMap[incoming.requestId] ?: lastActiveLanguageInfo
+                    val rawPrompt = langInfo?.rawPrompt ?: currentList.lastOrNull { it.isUser }?.let { it.originalText ?: it.text } ?: ""
+                    val engPrompt = langInfo?.englishPrompt ?: currentList.lastOrNull { it.isUser }?.text ?: ""
+                    val targetLang = langInfo?.sourceLang ?: "en"
+                    val isLatin = langInfo?.isLatinScript ?: TranslatorHelper.isMostlyLatin(rawPrompt)
+
                     val formatted = TranslatorHelper.sanitizeAndFormatReply(
                         rawAiResponse = incoming.text,
                         rawPrompt = rawPrompt,
@@ -313,9 +335,15 @@ class ChatRepository(context: Context) {
                         isLatinScript = isLatin
                     )
 
-                    val finalDisplayText = if (TranslatorHelper.isCreatorOrIdentityQuery(rawPrompt, engPrompt)) {
+                    // Real-time streaming:
+                    // During streaming (status != "completed"), stream raw/formatted text directly into UI with 0 latency.
+                    // Do NOT launch asynchronous Google Translate HTTP calls on intermediate streaming tokens.
+                    // When fully completed (currentStatus == "completed"), if translator is ON and needed, translate once cleanly.
+                    val finalDisplayText = if (!_settings.value.translatorEnabled) {
                         formatted
-                    } else if (targetLang != "en" && targetLang != "auto") {
+                    } else if (TranslatorHelper.isCreatorOrIdentityQuery(rawPrompt, engPrompt)) {
+                        formatted
+                    } else if (currentStatus == "completed" && targetLang != "en" && targetLang != "auto") {
                         TranslatorHelper.translateFromEnglishToUserLang(
                             englishText = formatted,
                             targetLang = targetLang,
@@ -328,12 +356,14 @@ class ChatRepository(context: Context) {
                     processedMessage = incoming.copy(
                         text = finalDisplayText,
                         model = requestedModel,
+                        status = currentStatus,
                         toolCall = incoming.toolCall ?: existingMsg?.toolCall,
                         toolResult = incoming.toolResult ?: existingMsg?.toolResult
                     )
                 } else {
                     processedMessage = incoming.copy(
                         model = requestedModel,
+                        status = currentStatus,
                         toolCall = incoming.toolCall ?: existingMsg?.toolCall,
                         toolResult = incoming.toolResult ?: existingMsg?.toolResult
                     )
@@ -357,11 +387,12 @@ class ChatRepository(context: Context) {
             }
 
             if (incoming.isAi && incoming.requestId == pendingRequestId) {
-                rtdbManager.cancelResponseTimeout()
-                if (incoming.status == "completed" || incoming.text.isNotEmpty()) {
+                if (processedMessage.status == "completed" || incoming.status == "completed") {
+                    rtdbManager.cancelResponseTimeout()
                     rtdbManager.setConnectionStatus(ConnectionStatus.RESPONSE_RECEIVED)
+                    isCurrentlyGeneratingFlow.value = false
                     pendingRequestId = null
-                } else if (incoming.status == "generating") {
+                } else if (processedMessage.status == "generating" && isCurrentlyGenerating) {
                     rtdbManager.setConnectionStatus(ConnectionStatus.AI_GENERATING)
                 }
             }
@@ -462,28 +493,40 @@ class ChatRepository(context: Context) {
         )
 
         pendingRequestId = reqId
+        stoppedRequestIds.remove(reqId)
+        isCurrentlyGeneratingFlow.value = true
 
         scope.launch {
-            val transResult = TranslatorHelper.translateToEnglish(trimmed.ifEmpty { "analyze image" })
-            val englishPrompt = transResult.translatedEnglish
-            val detectedLang = transResult.detectedLanguage
-            val isLatin = transResult.isLatinScript
+            val messageToSend = if (_settings.value.translatorEnabled) {
+                val transResult = TranslatorHelper.translateToEnglish(trimmed.ifEmpty { "analyze image" })
+                val englishPrompt = transResult.translatedEnglish
+                val detectedLang = transResult.detectedLanguage
+                val isLatin = transResult.isLatinScript
 
-            val langInfo = RequestLangInfo(
-                rawPrompt = trimmed,
-                englishPrompt = englishPrompt,
-                sourceLang = detectedLang,
-                isLatinScript = isLatin
-            )
-            requestLanguageMap[reqId] = langInfo
-            lastActiveLanguageInfo = langInfo
+                val langInfo = RequestLangInfo(
+                    rawPrompt = trimmed,
+                    englishPrompt = englishPrompt,
+                    sourceLang = detectedLang,
+                    isLatinScript = isLatin
+                )
+                requestLanguageMap[reqId] = langInfo
+                lastActiveLanguageInfo = langInfo
 
-            val messageToSend = userMessage.copy(
-                text = englishPrompt,
-                originalText = trimmed.ifEmpty { "[Image Attachment]" },
-                sourceLang = detectedLang,
-                status = "sent"
-            )
+                userMessage.copy(
+                    text = englishPrompt,
+                    originalText = trimmed.ifEmpty { "[Image Attachment]" },
+                    sourceLang = detectedLang,
+                    status = "sent"
+                )
+            } else {
+                requestLanguageMap.remove(reqId)
+                userMessage.copy(
+                    text = trimmed.ifEmpty { "[Image Attachment]" },
+                    originalText = trimmed.ifEmpty { "[Image Attachment]" },
+                    sourceLang = "auto",
+                    status = "sent"
+                )
+            }
 
             rtdbManager.sendMessage(
                 message = messageToSend,
@@ -504,6 +547,7 @@ class ChatRepository(context: Context) {
                 onError = { errorText ->
                     updateUserMessageStatus(userMsgId, "error", errorText)
                     pendingRequestId = null
+                    isCurrentlyGeneratingFlow.value = false
                 }
             )
         }
@@ -604,19 +648,26 @@ class ChatRepository(context: Context) {
         val currentConvId = _currentConversation.value?.id ?: ""
         val reqId = pendingRequestId ?: ""
 
-        // Instantly mark UI as stopped with zero latency so user never waits
-        val currentList = _messages.value.toMutableList()
-        val aiIdx = currentList.indexOfFirst { (it.requestId == reqId || reqId.isEmpty()) && it.isAi && it.isGenerating }
-        if (aiIdx >= 0) {
-            val current = currentList[aiIdx]
-            val updatedText = if (current.text.isEmpty()) "Generation stopped by user." else current.text
-            currentList[aiIdx] = current.copy(status = "completed", text = updatedText)
-            _messages.value = currentList
-            _currentConversation.value?.let { conv ->
-                prefs.saveMessages(conv.id, currentList)
+        if (reqId.isNotEmpty()) {
+            stoppedRequestIds.add(reqId)
+        }
+        isCurrentlyGeneratingFlow.value = false
+        pendingRequestId = null
+
+        // Instantly mark all generating AI messages in active conversation as completed
+        val currentList = _messages.value.map { msg ->
+            if (msg.isAi && (msg.isGenerating || msg.status == "generating")) {
+                val updatedText = if (msg.text.isBlank()) "Generation stopped by user." else msg.text
+                msg.copy(status = "completed", text = updatedText)
+            } else {
+                msg
             }
         }
-        pendingRequestId = null
+        _messages.value = currentList
+        _currentConversation.value?.let { conv ->
+            prefs.saveMessages(conv.id, currentList)
+        }
+
         rtdbManager.setConnectionStatus(ConnectionStatus.CONNECTED)
 
         // Notify backend in background asynchronously

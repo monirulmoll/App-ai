@@ -75,6 +75,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _selectedImageUri = MutableStateFlow<String?>(null)
     private val _selectedImageBase64 = MutableStateFlow<String?>(null)
+    private val _isForceStopped = MutableStateFlow(false)
     private val _isAgentMode = MutableStateFlow(false)
     private val _showWorkspaceDialog = MutableStateFlow(false)
     private val _showMemoryDialog = MutableStateFlow(false)
@@ -164,9 +165,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _conversationToRename,
             _dismissedModelSwitchTime,
             _selectedImageUri,
-            _selectedImageBase64
-        ) { showRename, convToRename, dismissedTime, imageUri, imageBase64 ->
-            tuple5(showRename, convToRename, dismissedTime, imageUri, imageBase64)
+            combine(_selectedImageBase64, _isForceStopped, repository.isCurrentlyGeneratingFlow) { b64, stopped, genFlow ->
+                GenState(b64, stopped, genFlow)
+            }
+        ) { showRename, convToRename, dismissedTime, imageUri, genState ->
+            tuple5(showRename, convToRename, dismissedTime, imageUri, genState)
         },
         combine(
             _isAgentMode,
@@ -182,10 +185,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     ) { (conversations, currentConv, messages, connStatus, isConnected),
         (settings, activeRtdbModel, modelResponse, isSwitching, models),
         (inputText, searchQuery, errorMsg, showModel, showSettings),
-        (showRename, convToRename, dismissedTime, imageUri, imageBase64),
+        (showRename, convToRename, dismissedTime, imageUri, genState),
         (agentMode, showWorkspace, showMem, showViewer, viewingUrl, files, mems) ->
 
-        val isGenerating = messages.any { it.isGenerating } || connStatus == ConnectionStatus.AI_GENERATING
+        val isGenerating = !genState.stopped && (genState.genFlow || messages.any { it.isAi && it.status == "generating" })
         val currentActiveModel = activeRtdbModel ?: currentConv?.model ?: settings.modelName
         val visibleModelResponse = if (modelResponse != null && modelResponse.timestamp > dismissedTime) modelResponse else null
 
@@ -209,7 +212,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             isModelSwitching = isSwitching,
             models = models,
             selectedImageUri = imageUri,
-            selectedImageBase64 = imageBase64,
+            selectedImageBase64 = genState.imageBase64,
             isAgentMode = agentMode || settings.agentModeEnabled,
             showWorkspaceDialog = showWorkspace,
             showMemoryDialog = showMem,
@@ -256,6 +259,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         _inputText.value = ""
         clearSelectedImage()
+        _isForceStopped.value = false
 
         viewModelScope.launch {
             repository.sendMessage(
@@ -268,12 +272,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun retryMessage(message: ChatMessage) {
+        _isForceStopped.value = false
         viewModelScope.launch {
             repository.retryMessage(message)
         }
     }
 
     fun regenerateResponse(aiMessage: ChatMessage) {
+        _isForceStopped.value = false
         viewModelScope.launch {
             repository.regenerateMessage(aiMessage)
         }
@@ -288,16 +294,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopGeneration() {
+        _isForceStopped.value = true
         repository.stopGeneration()
     }
 
     fun startNewChat() {
+        _isForceStopped.value = false
         viewModelScope.launch {
             repository.createNewConversation()
         }
     }
 
     fun selectConversation(id: String) {
+        _isForceStopped.value = false
         viewModelScope.launch {
             repository.selectConversation(id)
         }
@@ -425,4 +434,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun <A, B, C, D, E, F, G> tuple7(a: A, b: B, c: C, d: D, e: E, f: F, g: G) = Tuple7(a, b, c, d, e, f, g)
     private data class Tuple7<A, B, C, D, E, F, G>(val a: A, val b: B, val c: C, val d: D, val e: E, val f: F, val g: G)
+
+    private data class GenState(val imageBase64: String?, val stopped: Boolean, val genFlow: Boolean)
 }

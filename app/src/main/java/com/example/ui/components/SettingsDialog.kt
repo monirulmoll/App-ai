@@ -83,6 +83,7 @@ fun SettingsDialog(
     var memoryEnabled by remember { mutableStateOf(currentSettings.memoryEnabled) }
     var visionEnabled by remember { mutableStateOf(currentSettings.visionEnabled) }
     var systemInstruction by remember { mutableStateOf(currentSettings.systemInstruction) }
+    var translatorEnabled by remember { mutableStateOf(currentSettings.translatorEnabled) }
 
     val tabTitles = listOf("General", "Agent & AI", "Backend & About")
 
@@ -151,6 +152,39 @@ fun SettingsDialog(
                                         )
                                         Text(text = label, style = MaterialTheme.typography.bodySmall)
                                     }
+                                }
+                            }
+
+                            // Automatic Language Translator
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "🌐 Live Language Translator",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+                                        )
+                                        Text(
+                                            text = "Translate prompts & responses (Default: ON)",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(
+                                        checked = translatorEnabled,
+                                        onCheckedChange = { translatorEnabled = it }
+                                    )
                                 }
                             }
 
@@ -384,7 +418,8 @@ fun SettingsDialog(
                             agentModeEnabled = agentModeEnabled,
                             memoryEnabled = memoryEnabled,
                             visionEnabled = visionEnabled,
-                            systemInstruction = systemInstruction
+                            systemInstruction = systemInstruction,
+                            translatorEnabled = translatorEnabled
                         )
                     )
                 },

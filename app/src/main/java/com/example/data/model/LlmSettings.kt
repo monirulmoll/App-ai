@@ -21,7 +21,8 @@ data class LlmSettings(
     val memoryEnabled: Boolean = true,
     val visionEnabled: Boolean = true,
     val systemInstruction: String = DEFAULT_SYSTEM_INSTRUCTION,
-    val speechInputLanguage: String = "auto"
+    val speechInputLanguage: String = "auto",
+    val translatorEnabled: Boolean = true
 ) {
     companion object {
         const val DEFAULT_FIREBASE_URL = ""

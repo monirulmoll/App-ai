@@ -36,8 +36,7 @@ fun GemoBottomNavBar(
     val items = listOf(
         NavItem(AppScreen.HOME, "Home", Icons.Default.Home),
         NavItem(AppScreen.AGENT_MODE, "Agent", Icons.Default.SmartToy),
-        NavItem(AppScreen.FILE_MANAGER, "Files", Icons.Default.Folder),
-        NavItem(AppScreen.SETTINGS, "Settings", Icons.Default.Settings)
+        NavItem(AppScreen.SETTINGS, "Setting", Icons.Default.Settings)
     )
 
     NavigationBar(

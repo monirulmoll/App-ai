@@ -316,4 +316,17 @@ class ChatMessageUnitTest {
         assertEquals("DeepSeek", LlmSettings.detectProvider("deepseek-r1-distill.gguf"))
         assertEquals("Custom", LlmSettings.detectProvider("my-custom-model.gguf"))
     }
+
+    @Test
+    fun testTranslatorEnabledByDefault() {
+        val settings = LlmSettings()
+        assertTrue(settings.translatorEnabled)
+    }
+
+    @Test
+    fun testHuPhoneticMappingHindi() = runBlocking {
+        val result = TranslatorHelper.translateToEnglish("hu")
+        assertEquals("hi", result.detectedLanguage)
+        assertTrue(result.isLatinScript)
+    }
 }

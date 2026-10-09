@@ -275,14 +275,14 @@ class FirebaseRtdbManager(private val context: Context) {
 
         // 1. Write stop to conversation path
         if (conversationId.isNotEmpty()) {
-            db.getReference("conversations")
-                .child(conversationId)
-                .child("stop")
-                .setValue(stopPayload)
+            val convRef = db.getReference("conversations").child(conversationId)
+            convRef.child("stop").setValue(stopPayload)
+            convRef.child("stopGeneration").setValue(true)
         }
 
-        // 2. Also write to global /stop
+        // 2. Also write to global /stop and /stopGeneration
         db.getReference("stop").setValue(stopPayload)
+        db.getReference("stopGeneration").setValue(true)
 
         var completed = false
         val completeOnce: (Boolean) -> Unit = { success ->

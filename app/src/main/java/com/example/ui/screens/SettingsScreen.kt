@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
@@ -103,6 +104,7 @@ fun SettingsScreen(
     var visionEnabled by remember { mutableStateOf(currentSettings.visionEnabled) }
     var systemInstruction by remember { mutableStateOf(currentSettings.systemInstruction) }
     var speechLang by remember { mutableStateOf(currentSettings.speechInputLanguage) }
+    var translatorEnabled by remember { mutableStateOf(currentSettings.translatorEnabled) }
 
     val providers = listOf("Qwen", "Ollama", "vLLM", "Custom")
     val speechLangs = listOf("auto", "en", "hi", "es", "fr")
@@ -133,7 +135,8 @@ fun SettingsScreen(
                                 memoryEnabled = memoryEnabled,
                                 visionEnabled = visionEnabled,
                                 systemInstruction = systemInstruction.trim(),
-                                speechInputLanguage = speechLang
+                                speechInputLanguage = speechLang,
+                                translatorEnabled = translatorEnabled
                             )
                             onSaveSettings(updated)
                             Toast.makeText(context, "Settings saved!", Toast.LENGTH_SHORT).show()
@@ -253,6 +256,98 @@ fun SettingsScreen(
                 }
             }
 
+            // Dedicated Heavy Media & Cloud Storage Configuration (Images, Videos & Large Files)
+            item {
+                var storageBucketUrl by remember { mutableStateOf("https://firebasestorage.googleapis.com/v0/b/gemo-ai-cloud.appspot.com") }
+                var mediaProvider by remember { mutableStateOf("Firebase Storage") }
+                val mediaProviders = listOf("Firebase Storage", "S3 Compatible", "Local WebDAV")
+                var maxMediaUploadMb by remember { mutableFloatStateOf(100f) }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = GeminiBlue.copy(alpha = 0.08f)
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.CloudUpload, contentDescription = null, tint = GeminiBlue, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Heavy Media & Cloud Storage",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = GeminiBlue.copy(alpha = 0.2f)
+                            ) {
+                                Text(
+                                    text = "Storage Slot",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = GeminiBlue,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Separate dedicated storage endpoint for large binary assets (Videos, high-res Images, APKs and archives) to avoid choking Realtime Database.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("Media Storage Provider", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            mediaProviders.forEach { mp ->
+                                FilterChip(
+                                    selected = mediaProvider == mp,
+                                    onClick = { mediaProvider = mp },
+                                    label = { Text(mp, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = storageBucketUrl,
+                            onValueChange = { storageBucketUrl = it },
+                            label = { Text("Cloud Storage Bucket / Endpoint URL") },
+                            placeholder = { Text("https://firebasestorage.googleapis.com/v0/b/...") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Max Upload Size Limit", fontSize = 12.sp)
+                            Text("${maxMediaUploadMb.toInt()} MB", fontWeight = FontWeight.Bold, color = GeminiBlue)
+                        }
+                        Slider(
+                            value = maxMediaUploadMb,
+                            onValueChange = { maxMediaUploadMb = it },
+                            valueRange = 10f..500f,
+                            steps = 8
+                        )
+                    }
+                }
+            }
+
             // Appearance & Theme
             item {
                 Card(
@@ -343,6 +438,21 @@ fun SettingsScreen(
                                 Text("Allow image analysis and visual questions", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Switch(checked = visionEnabled, onCheckedChange = { visionEnabled = it })
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Automatic Language Translator
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Live Language Translator", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                Text("Automatically translate prompts and responses (Default: ON)", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(checked = translatorEnabled, onCheckedChange = { translatorEnabled = it })
                         }
                     }
                 }

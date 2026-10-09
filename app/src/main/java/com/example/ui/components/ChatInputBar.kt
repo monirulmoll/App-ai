@@ -226,6 +226,22 @@ fun ChatInputBar(
                             leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = GeminiCyan) }
                         )
                         DropdownMenuItem(
+                            text = { Text("🎬 Send Video Reference / Clip") },
+                            onClick = {
+                                showAttachMenu = false
+                                onTextChanged("Analyze video: ")
+                            },
+                            leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = GeminiPurple) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("📄 Attach Document / File") },
+                            onClick = {
+                                showAttachMenu = false
+                                onOpenWorkspace()
+                            },
+                            leadingIcon = { Icon(Icons.Default.Description, contentDescription = null, tint = GeminiCyan) }
+                        )
+                        DropdownMenuItem(
                             text = { Text("📁 File & Code Workspace") },
                             onClick = {
                                 showAttachMenu = false
