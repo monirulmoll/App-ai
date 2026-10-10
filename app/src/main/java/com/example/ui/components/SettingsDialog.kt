@@ -53,11 +53,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.widget.Toast
 import com.example.R
 import com.example.data.model.LlmSettings
 import com.example.ui.theme.GeminiBlue
@@ -335,6 +339,48 @@ fun SettingsDialog(
                         }
                         2 -> {
                             // Tab 2: Backend RTDB & About
+                            val context = LocalContext.current
+                            val currentUserId = remember { com.example.data.local.LocalChatPreferences(context).getUserId() }
+                            val clipboardManager = LocalClipboardManager.current
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                ),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Multi-User Device ID",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = currentUserId,
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = GeminiCyan
+                                        )
+                                    }
+                                    TextButton(
+                                        onClick = {
+                                            clipboardManager.setText(AnnotatedString(currentUserId))
+                                            Toast.makeText(context, "Copied ID: $currentUserId", Toast.LENGTH_SHORT).show()
+                                        }
+                                    ) {
+                                        Text("Copy", fontSize = 12.sp)
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
                             Column {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),

@@ -1,6 +1,9 @@
 package com.example.data.repository
 
 import android.content.Context
+import android.util.Log
+import com.example.data.auth.GoogleAuthManager
+import com.example.data.model.GoogleUserProfile
 import com.example.data.agent.AgentToolEngine
 import com.example.data.firebase.FirebaseRtdbManager
 import com.example.data.local.LocalChatPreferences
@@ -33,6 +36,9 @@ private data class RequestLangInfo(
 )
 
 class ChatRepository(context: Context) {
+    val googleAuthManager = GoogleAuthManager(context)
+    val currentUserProfile: StateFlow<GoogleUserProfile?> = googleAuthManager.currentUser
+
     private val prefs = LocalChatPreferences(context)
     private val rtdbManager = FirebaseRtdbManager(context)
     val workspaceManager = FileWorkspaceManager(context)
@@ -93,6 +99,11 @@ class ChatRepository(context: Context) {
         } else {
             // Create initial welcome chat
             createNewConversation()
+        }
+
+        // If user already logged in with Google, restore cloud conversations from RTDB
+        googleAuthManager.currentUser.value?.let { googleUser ->
+            restoreGoogleUserCloudChats(googleUser.googleUserId)
         }
 
         // Listen for active model updates written by backend to "/model"
@@ -896,5 +907,60 @@ class ChatRepository(context: Context) {
 
     fun setOnboardingCompleted(completed: Boolean) {
         prefs.setOnboardingCompleted(completed)
+    }
+
+    // Google Sign-In & Multi-Device Cloud Chat Restore
+    fun restoreGoogleUserCloudChats(googleUserId: String, onComplete: (() -> Unit)? = null) {
+        scope.launch {
+            rtdbManager.fetchUserConversationsFromRtdb(googleUserId) { cloudConvs, messagesMap ->
+                if (cloudConvs.isNotEmpty()) {
+                    val existingLocal = prefs.getConversations().toMutableList()
+                    val merged = (cloudConvs + existingLocal).distinctBy { it.id }.sortedByDescending { it.updatedAt }
+                    _conversations.value = merged
+                    prefs.saveConversations(merged)
+
+                    for ((cId, msgs) in messagesMap) {
+                        val localMsgs = prefs.getMessages(cId).toMutableList()
+                        val mergedMsgs = (localMsgs + msgs).distinctBy { it.messageId }.sortedBy { it.timestamp }
+                        prefs.saveMessages(cId, mergedMsgs)
+                    }
+
+                    if (_currentConversation.value == null && merged.isNotEmpty()) {
+                        selectConversation(merged.first().id)
+                    } else {
+                        val curId = _currentConversation.value?.id
+                        if (curId != null && messagesMap.containsKey(curId)) {
+                            _messages.value = prefs.getMessages(curId)
+                        }
+                    }
+                    Log.d("ChatRepository", "Successfully restored ${cloudConvs.size} cloud conversations for Google user: $googleUserId")
+                }
+                onComplete?.invoke()
+            }
+        }
+    }
+
+    fun signInWithGoogle(
+        activity: androidx.activity.ComponentActivity,
+        serverClientId: String? = null,
+        onResult: (Result<GoogleUserProfile>) -> Unit
+    ) {
+        scope.launch {
+            val result = googleAuthManager.signInWithGoogle(activity, serverClientId)
+            result.onSuccess { profile ->
+                rtdbManager.syncUserProfile(profile)
+                rtdbManager.resetStopFlag()
+                restoreGoogleUserCloudChats(profile.googleUserId)
+            }
+            onResult(result)
+        }
+    }
+
+    fun signOutGoogle(onComplete: () -> Unit = {}) {
+        scope.launch {
+            googleAuthManager.signOut()
+            rtdbManager.resetStopFlag()
+            onComplete()
+        }
     }
 }

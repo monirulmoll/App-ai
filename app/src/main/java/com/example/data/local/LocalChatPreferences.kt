@@ -36,6 +36,72 @@ class LocalChatPreferences(context: Context) {
         private const val KEY_ONBOARDING_DONE = "onboarding_completed"
         private const val KEY_ACCENT_COLOR = "accent_color"
         private const val KEY_FONT_SCALE = "font_scale"
+        private const val KEY_USER_ID = "gemo_user_id"
+        private const val KEY_GOOGLE_USER_ID = "google_user_id"
+        private const val KEY_GOOGLE_EMAIL = "google_email"
+        private const val KEY_GOOGLE_NAME = "google_name"
+        private const val KEY_GOOGLE_PHOTO = "google_photo"
+        private const val KEY_GOOGLE_ID_TOKEN = "google_id_token"
+        private const val KEY_GOOGLE_LOGIN_TIME = "google_login_time"
+    }
+
+    fun getUserId(): String {
+        val googleId = prefs.getString(KEY_GOOGLE_USER_ID, null)
+        if (!googleId.isNullOrBlank()) {
+            return googleId
+        }
+        val existing = prefs.getString(KEY_USER_ID, null)
+        if (!existing.isNullOrBlank()) {
+            return existing
+        }
+        val newId = "user_" + java.util.UUID.randomUUID().toString().replace("-", "").take(10)
+        prefs.edit().putString(KEY_USER_ID, newId).apply()
+        return newId
+    }
+
+    fun setUserId(id: String) {
+        if (id.isNotBlank()) {
+            prefs.edit().putString(KEY_USER_ID, id.trim()).apply()
+        }
+    }
+
+    fun saveGoogleUserProfile(profile: com.example.data.model.GoogleUserProfile) {
+        prefs.edit()
+            .putString(KEY_GOOGLE_USER_ID, profile.googleUserId)
+            .putString(KEY_GOOGLE_EMAIL, profile.email)
+            .putString(KEY_GOOGLE_NAME, profile.displayName)
+            .putString(KEY_GOOGLE_PHOTO, profile.photoUrl)
+            .putString(KEY_GOOGLE_ID_TOKEN, profile.idToken)
+            .putLong(KEY_GOOGLE_LOGIN_TIME, profile.lastLoginAt)
+            .apply()
+    }
+
+    fun getGoogleUserProfile(): com.example.data.model.GoogleUserProfile? {
+        val googleId = prefs.getString(KEY_GOOGLE_USER_ID, null) ?: return null
+        if (googleId.isBlank()) return null
+        return com.example.data.model.GoogleUserProfile(
+            googleUserId = googleId,
+            email = prefs.getString(KEY_GOOGLE_EMAIL, "") ?: "",
+            displayName = prefs.getString(KEY_GOOGLE_NAME, "") ?: "",
+            photoUrl = prefs.getString(KEY_GOOGLE_PHOTO, null),
+            idToken = prefs.getString(KEY_GOOGLE_ID_TOKEN, null),
+            lastLoginAt = prefs.getLong(KEY_GOOGLE_LOGIN_TIME, System.currentTimeMillis())
+        )
+    }
+
+    fun clearGoogleUserProfile() {
+        prefs.edit()
+            .remove(KEY_GOOGLE_USER_ID)
+            .remove(KEY_GOOGLE_EMAIL)
+            .remove(KEY_GOOGLE_NAME)
+            .remove(KEY_GOOGLE_PHOTO)
+            .remove(KEY_GOOGLE_ID_TOKEN)
+            .remove(KEY_GOOGLE_LOGIN_TIME)
+            .apply()
+    }
+
+    fun isLoggedInWithGoogle(): Boolean {
+        return !prefs.getString(KEY_GOOGLE_USER_ID, null).isNullOrBlank()
     }
 
     fun getSettings(): LlmSettings {
@@ -150,14 +216,14 @@ class LocalChatPreferences(context: Context) {
                         requestId = obj.optString("requestId", ""),
                         model = obj.optString("model", ""),
                         errorMessage = if (obj.has("errorMessage") && !obj.isNull("errorMessage")) obj.getString("errorMessage") else null,
-                        imageUri = obj.optString("imageUri", null),
-                        imageBase64 = obj.optString("imageBase64", null),
-                        imageResultUrl = obj.optString("imageResultUrl", null),
-                        toolCall = obj.optString("toolCall", null),
-                        toolResult = obj.optString("toolResult", null),
+                        imageUri = if (obj.has("imageUri") && !obj.isNull("imageUri")) obj.getString("imageUri") else null,
+                        imageBase64 = if (obj.has("imageBase64") && !obj.isNull("imageBase64")) obj.getString("imageBase64") else null,
+                        imageResultUrl = if (obj.has("imageResultUrl") && !obj.isNull("imageResultUrl")) obj.getString("imageResultUrl") else null,
+                        toolCall = if (obj.has("toolCall") && !obj.isNull("toolCall")) obj.getString("toolCall") else null,
+                        toolResult = if (obj.has("toolResult") && !obj.isNull("toolResult")) obj.getString("toolResult") else null,
                         agentMode = obj.optBoolean("agentMode", false),
-                        intent = obj.optString("intent", null),
-                        memoryContext = obj.optString("memoryContext", null)
+                        intent = if (obj.has("intent") && !obj.isNull("intent")) obj.getString("intent") else null,
+                        memoryContext = if (obj.has("memoryContext") && !obj.isNull("memoryContext")) obj.getString("memoryContext") else null
                     )
                 )
             }

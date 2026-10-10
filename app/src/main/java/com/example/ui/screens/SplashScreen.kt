@@ -3,6 +3,7 @@ package com.example.ui.screens
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +16,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.res.painterResource
+import com.example.R
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -94,25 +97,14 @@ fun SplashScreen(
                     .scale(scale.value)
                     .alpha(alpha.value)
             ) {
-                // Large G Logo
-                Box(
+                // Large App Logo
+                Image(
+                    painter = painterResource(id = R.drawable.ic_gemo_logo_1791602183832),
+                    contentDescription = "Gemo AI Logo",
                     modifier = Modifier
-                        .size(110.dp)
+                        .size(120.dp)
                         .clip(CircleShape)
-                        .background(
-                            Brush.linearGradient(
-                                listOf(GeminiBlue, GeminiPurple, GeminiCyan)
-                            )
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "G",
-                        fontSize = 58.sp,
-                        fontWeight = FontWeight.Black,
-                        color = Color.White
-                    )
-                }
+                )
 
                 Spacer(modifier = Modifier.height(24.dp))
 

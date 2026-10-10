@@ -84,6 +84,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentScreen = MutableStateFlow(AppScreen.SPLASH)
     val currentScreen: StateFlow<AppScreen> = _currentScreen
 
+    val currentUserProfile: StateFlow<com.example.data.model.GoogleUserProfile?> = repository.currentUserProfile
+
+    fun signInWithGoogle(
+        activity: androidx.activity.ComponentActivity,
+        serverClientId: String? = null,
+        onResult: (Result<com.example.data.model.GoogleUserProfile>) -> Unit
+    ) {
+        repository.signInWithGoogle(activity, serverClientId, onResult)
+    }
+
+    fun signOutGoogle(onComplete: () -> Unit = {}) {
+        repository.signOutGoogle(onComplete)
+    }
+
     fun isOnboardingCompleted(): Boolean = repository.isOnboardingCompleted()
 
     fun navigateTo(screen: AppScreen) {

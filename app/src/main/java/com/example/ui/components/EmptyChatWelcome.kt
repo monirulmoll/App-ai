@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -7,6 +8,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.res.painterResource
+import com.example.R
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -109,21 +112,14 @@ fun EmptyChatWelcome(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        // Glowing emblem
-        Box(
+        // Glowing App Logo Emblem
+        Image(
+            painter = painterResource(id = R.drawable.ic_gemo_logo_1791602183832),
+            contentDescription = "Gemo AI Logo",
             modifier = Modifier
-                .size(76.dp)
+                .size(80.dp)
                 .clip(CircleShape)
-                .background(sparkGradient),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Default.AutoAwesome,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(40.dp)
-            )
-        }
+        )
 
         Spacer(modifier = Modifier.height(18.dp))
 

@@ -60,8 +60,12 @@ class FirebaseRtdbManager(private val context: Context) {
     private var connectedListener: ValueEventListener? = null
     private var connectedRef: DatabaseReference? = null
 
-    private var activeConversationListener: ChildEventListener? = null
-    private var activeConversationRef: DatabaseReference? = null
+    val userId: String get() = com.example.data.local.LocalChatPreferences(context).getUserId()
+
+    private var activeUserMessagesRef: DatabaseReference? = null
+    private var activeUserChildListener: ChildEventListener? = null
+    private var activeRootMessagesRef: DatabaseReference? = null
+    private var activeRootChildListener: ChildEventListener? = null
     private var activeConversationId: String? = null
 
     private val okHttpClient = OkHttpClient.Builder()
@@ -71,6 +75,28 @@ class FirebaseRtdbManager(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.IO)
     private var pendingTimeoutJob: Job? = null
+
+    fun resetStopFlag() {
+        val db = databaseInstance ?: return
+        try {
+            val falsePayload = mapOf(
+                "stop" to false,
+                "conversationId" to "",
+                "requestId" to "",
+                "timestamp" to System.currentTimeMillis()
+            )
+            // 1. Reset per-user stop flag
+            db.getReference("users").child(userId).child("stop").setValue(falsePayload)
+            db.getReference("users").child(userId).child("stopGeneration").setValue(false)
+
+            // 2. Reset global stop flag
+            db.getReference("stop").setValue(falsePayload)
+            db.getReference("stopGeneration").setValue(false)
+            Log.d(tag, "Stop flag reset to false for user $userId and global")
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to reset stop flag: ${e.message}")
+        }
+    }
 
     fun initialize(url: String) {
         val sanitizedUrl = url.trim().removeSuffix("/")
@@ -145,6 +171,7 @@ class FirebaseRtdbManager(private val context: Context) {
                     Log.d(tag, "RTDB .info/connected: $connected")
                     _isConnectedToRtdb.value = connected
                     if (connected) {
+                        resetStopFlag()
                         if (_connectionStatus.value != ConnectionStatus.AI_GENERATING &&
                             _connectionStatus.value != ConnectionStatus.MESSAGE_SENDING
                         ) {
@@ -272,17 +299,24 @@ class FirebaseRtdbManager(private val context: Context) {
             "stop" to true,
             "requestId" to requestId,
             "conversationId" to conversationId,
+            "userId" to userId,
             "timestamp" to System.currentTimeMillis()
         )
 
-        // 1. Write stop to conversation path
+        // 1. Write stop to user's conversation path and root conversation path
         if (conversationId.isNotEmpty()) {
-            val convRef = db.getReference("conversations").child(conversationId)
-            convRef.child("stop").setValue(stopPayload)
-            convRef.child("stopGeneration").setValue(true)
+            val userConvRef = db.getReference("users").child(userId).child("conversations").child(conversationId)
+            userConvRef.child("stop").setValue(stopPayload)
+            userConvRef.child("stopGeneration").setValue(true)
+
+            val rootConvRef = db.getReference("conversations").child(conversationId)
+            rootConvRef.child("stop").setValue(stopPayload)
+            rootConvRef.child("stopGeneration").setValue(true)
         }
 
-        // 2. Also write to global /stop and /stopGeneration
+        // 2. Also write to per-user stop and global /stop
+        db.getReference("users").child(userId).child("stop").setValue(stopPayload)
+        db.getReference("users").child(userId).child("stopGeneration").setValue(true)
         db.getReference("stop").setValue(stopPayload)
         db.getReference("stopGeneration").setValue(true)
 
@@ -290,21 +324,26 @@ class FirebaseRtdbManager(private val context: Context) {
         val completeOnce: (Boolean) -> Unit = { success ->
             if (!completed) {
                 completed = true
+                // Automatically reset stop flag back to false so it does not stay permanently true in database
+                scope.launch {
+                    delay(500)
+                    resetStopFlag()
+                }
                 onResponse(success)
             }
         }
 
-        // Safety fallback timer so UI is guaranteed to unblock
+        // Safety fallback timer: unblock UI and reset stop flag
         scope.launch {
-            delay(3500)
+            delay(2000)
             completeOnce(true)
         }
 
         // 3. Listen for backend stop response
         val stopRespRef = if (conversationId.isNotEmpty()) {
-            db.getReference("conversations").child(conversationId).child("stop").child("response")
+            db.getReference("users").child(userId).child("conversations").child(conversationId).child("stop").child("response")
         } else {
-            db.getReference("stop").child("response")
+            db.getReference("users").child(userId).child("stop").child("response")
         }
 
         val stopListener = object : ValueEventListener {
@@ -386,16 +425,30 @@ class FirebaseRtdbManager(private val context: Context) {
             return
         }
 
+        // Before sending, ensure stop flag is reset to false
+        resetStopFlag()
+
         _connectionStatus.value = ConnectionStatus.MESSAGE_SENDING
 
-        val msgRef = db.getReference("conversations")
+        val map = message.toFirebaseMap().toMutableMap()
+        map["userId"] = userId
+
+        // 1. Primary isolated user path: /users/{userId}/conversations/{conversationId}/messages/{messageId}
+        val userMsgRef = db.getReference("users")
+            .child(userId)
+            .child("conversations")
             .child(message.conversationId)
             .child("messages")
             .child(message.messageId)
 
-        val map = message.toFirebaseMap()
+        // 2. Also write to root /conversations for backend / single-user compatibility
+        val rootMsgRef = db.getReference("conversations")
+            .child(message.conversationId)
+            .child("messages")
+            .child(message.messageId)
 
-        msgRef.setValue(map) { databaseError, _ ->
+        rootMsgRef.setValue(map)
+        userMsgRef.setValue(map) { databaseError, _ ->
             if (databaseError != null) {
                 Log.e(tag, "Failed to send message: ${databaseError.message} (code: ${databaseError.code})")
                 val errMsg = when (databaseError.code) {
@@ -407,23 +460,36 @@ class FirebaseRtdbManager(private val context: Context) {
                 _connectionStatus.value = ConnectionStatus.SERVER_UNAVAILABLE
                 onError(errMsg)
             } else {
-                Log.d(tag, "Message ${message.messageId} successfully written to RTDB")
+                Log.d(tag, "Message ${message.messageId} successfully written to RTDB for user $userId")
                 _connectionStatus.value = ConnectionStatus.AI_GENERATING
-                // Update conversation metadata
+                // Update conversation metadata on both paths
                 try {
-                    val convRef = db.getReference("conversations")
+                    val metaUpdates = mapOf<String, Any?>(
+                        "updatedAt" to System.currentTimeMillis(),
+                        "lastMessage" to message.text,
+                        "prompt" to message.text,
+                        "lastPrompt" to message.text,
+                        "model" to message.model,
+                        "maker" to "Rohit",
+                        "userId" to userId
+                    )
+                    val userConvRef = db.getReference("users")
+                        .child(userId)
+                        .child("conversations")
                         .child(message.conversationId)
-                    convRef.child("updatedAt").setValue(System.currentTimeMillis())
-                    convRef.child("lastMessage").setValue(message.text)
-                    convRef.child("prompt").setValue(message.text)
-                    convRef.child("lastPrompt").setValue(message.text)
-                    convRef.child("model").setValue(message.model)
-                    convRef.child("maker").setValue("Rohit")
+                    val rootConvRef = db.getReference("conversations")
+                        .child(message.conversationId)
+
+                    userConvRef.updateChildren(metaUpdates)
+                    rootConvRef.updateChildren(metaUpdates)
+
                     if (message.hasImage) {
-                        convRef.child("hasImage").setValue(true)
+                        userConvRef.child("hasImage").setValue(true)
+                        rootConvRef.child("hasImage").setValue(true)
                     }
                     if (message.agentMode) {
-                        convRef.child("agentMode").setValue(true)
+                        userConvRef.child("agentMode").setValue(true)
+                        rootConvRef.child("agentMode").setValue(true)
                     }
                 } catch (_: Exception) {}
 
@@ -441,56 +507,72 @@ class FirebaseRtdbManager(private val context: Context) {
         val db = databaseInstance ?: return
 
         stopListeningToConversation()
-
         activeConversationId = conversationId
-        val messagesRef = db.getReference("conversations")
-            .child(conversationId)
-            .child("messages")
-        activeConversationRef = messagesRef
 
-        val childListener = object : ChildEventListener {
-            override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
-                val msg = parseMessageSnapshot(snapshot, conversationId)
-                if (msg != null) {
-                    Log.d(tag, "onChildAdded: id=${msg.messageId}, sender=${msg.sender}, status=${msg.status}")
-                    onMessageReceived(msg)
+        fun createChildListener(): ChildEventListener {
+            return object : ChildEventListener {
+                override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
+                    val msg = parseMessageSnapshot(snapshot, conversationId)
+                    if (msg != null) {
+                        Log.d(tag, "onChildAdded: id=${msg.messageId}, sender=${msg.sender}, status=${msg.status}")
+                        onMessageReceived(msg)
+                    }
                 }
-            }
 
-            override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
-                val msg = parseMessageSnapshot(snapshot, conversationId)
-                if (msg != null) {
-                    Log.d(tag, "onChildChanged: id=${msg.messageId}, sender=${msg.sender}, status=${msg.status}")
-                    onMessageUpdated(msg)
+                override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
+                    val msg = parseMessageSnapshot(snapshot, conversationId)
+                    if (msg != null) {
+                        Log.d(tag, "onChildChanged: id=${msg.messageId}, sender=${msg.sender}, status=${msg.status}")
+                        onMessageUpdated(msg)
+                    }
                 }
-            }
 
-            override fun onChildRemoved(snapshot: DataSnapshot) {}
+                override fun onChildRemoved(snapshot: DataSnapshot) {}
+                override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
 
-            override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
-
-            override fun onCancelled(error: DatabaseError) {
-                Log.e(tag, "listenToConversation onCancelled: ${error.message}")
-                val errMsg = "Database listener error: ${error.message}"
-                _connectionStatus.value = ConnectionStatus.SERVER_UNAVAILABLE
-                onError(errMsg)
+                override fun onCancelled(error: DatabaseError) {
+                    Log.e(tag, "listenToConversation onCancelled: ${error.message}")
+                    val errMsg = "Database listener error: ${error.message}"
+                    _connectionStatus.value = ConnectionStatus.SERVER_UNAVAILABLE
+                    onError(errMsg)
+                }
             }
         }
 
-        activeConversationListener = childListener
-        messagesRef.addChildEventListener(childListener)
+        // Listen to isolated per-user path
+        val userMessagesRef = db.getReference("users")
+            .child(userId)
+            .child("conversations")
+            .child(conversationId)
+            .child("messages")
+        val userListener = createChildListener()
+        activeUserMessagesRef = userMessagesRef
+        activeUserChildListener = userListener
+        userMessagesRef.addChildEventListener(userListener)
+
+        // Also listen to root conversations path
+        val rootMessagesRef = db.getReference("conversations")
+            .child(conversationId)
+            .child("messages")
+        val rootListener = createChildListener()
+        activeRootMessagesRef = rootMessagesRef
+        activeRootChildListener = rootListener
+        rootMessagesRef.addChildEventListener(rootListener)
     }
 
     fun stopListeningToConversation() {
         try {
-            activeConversationRef?.let { ref ->
-                activeConversationListener?.let { listener ->
-                    ref.removeEventListener(listener)
-                }
+            activeUserMessagesRef?.let { ref ->
+                activeUserChildListener?.let { listener -> ref.removeEventListener(listener) }
+            }
+            activeRootMessagesRef?.let { ref ->
+                activeRootChildListener?.let { listener -> ref.removeEventListener(listener) }
             }
         } catch (_: Exception) {}
-        activeConversationRef = null
-        activeConversationListener = null
+        activeUserMessagesRef = null
+        activeUserChildListener = null
+        activeRootMessagesRef = null
+        activeRootChildListener = null
         activeConversationId = null
     }
 
@@ -654,12 +736,14 @@ class FirebaseRtdbManager(private val context: Context) {
     fun syncWorkspaceFile(file: WorkspaceFile) {
         val db = databaseInstance ?: return
         val sanitized = file.filename.replace(".", "_")
+        db.getReference("users").child(userId).child("workspace").child("files").child(sanitized).setValue(file.toMap())
         db.getReference("workspace").child("files").child(sanitized).setValue(file.toMap())
     }
 
     fun syncMemories(memories: List<UserMemory>) {
         val db = databaseInstance ?: return
         val map = memories.associate { it.id to it.toMap() }
+        db.getReference("users").child(userId).child("memory").child("active").setValue(map)
         db.getReference("memory").child("active").setValue(map)
     }
 
@@ -718,5 +802,71 @@ class FirebaseRtdbManager(private val context: Context) {
     fun cancelTerminalCommand(commandId: String) {
         val db = databaseInstance ?: return
         db.getReference("agent").child("terminal").child("commands").child(commandId).child("status").setValue("CANCELLED")
+    }
+
+    // Google Sign-In & Multi-Device Cloud Profile & Chat Restore
+    fun syncUserProfile(profile: com.example.data.model.GoogleUserProfile) {
+        val db = databaseInstance ?: return
+        db.getReference("users").child(profile.googleUserId).child("profile").setValue(profile.toMap())
+    }
+
+    fun fetchUserConversationsFromRtdb(
+        targetUserId: String = userId,
+        onResult: (List<com.example.data.model.Conversation>, Map<String, List<ChatMessage>>) -> Unit
+    ) {
+        val db = databaseInstance ?: return
+        db.getReference("users").child(targetUserId).child("conversations")
+            .addListenerForSingleValueEvent(object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val convList = mutableListOf<com.example.data.model.Conversation>()
+                    val messagesMap = mutableMapOf<String, List<ChatMessage>>()
+                    if (!snapshot.exists()) {
+                        onResult(emptyList(), emptyMap())
+                        return
+                    }
+                    for (convSnap in snapshot.children) {
+                        val cId = convSnap.key ?: continue
+                        val title = convSnap.child("lastPrompt").getValue(String::class.java)
+                            ?: convSnap.child("prompt").getValue(String::class.java)
+                            ?: convSnap.child("lastMessage").getValue(String::class.java)
+                            ?: convSnap.child("title").getValue(String::class.java)
+                            ?: "Conversation"
+                        val updatedAt = (convSnap.child("updatedAt").getValue(Number::class.java))?.toLong() ?: System.currentTimeMillis()
+                        val model = convSnap.child("model").getValue(String::class.java) ?: "Qwen"
+
+                        convList.add(
+                            com.example.data.model.Conversation(
+                                id = cId,
+                                title = title,
+                                model = model,
+                                updatedAt = updatedAt
+                            )
+                        )
+
+                        val msgsSnap = convSnap.child("messages")
+                        val msgsList = mutableListOf<ChatMessage>()
+                        for (mSnap in msgsSnap.children) {
+                            val mKey = mSnap.key ?: continue
+                            val mVal = mSnap.value
+                            if (mVal is Map<*, *>) {
+                                @Suppress("UNCHECKED_CAST")
+                                val mMap = mVal as Map<String, Any?>
+                                msgsList.add(ChatMessage.fromMap(mKey, mMap).copy(conversationId = cId))
+                            }
+                        }
+                        if (msgsList.isNotEmpty()) {
+                            msgsList.sortBy { it.timestamp }
+                            messagesMap[cId] = msgsList
+                        }
+                    }
+                    convList.sortByDescending { it.updatedAt }
+                    onResult(convList, messagesMap)
+                }
+
+                override fun onCancelled(error: DatabaseError) {
+                    Log.w(tag, "fetchUserConversationsFromRtdb error: ${error.message}")
+                    onResult(emptyList(), emptyMap())
+                }
+            })
     }
 }
