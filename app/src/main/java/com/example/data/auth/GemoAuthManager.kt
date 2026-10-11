@@ -2,6 +2,7 @@ package com.example.data.auth
 
 import android.content.Context
 import android.util.Log
+import com.example.data.config.DatabaseConfig
 import com.example.data.firebase.FirebaseInitializer
 import com.example.data.local.LocalChatPreferences
 import com.example.data.model.AuthSession
