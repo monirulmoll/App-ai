@@ -8,19 +8,38 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
 
+/**
+ * Enterprise-grade User Memory Manager for Gemo AI.
+ * Strictly guarantees that memories are loaded, stored, and managed per authenticated UID.
+ * Zero cross-user memory leakage.
+ */
 class MemoryManager(context: Context, private val prefs: LocalChatPreferences) {
 
+    private var activeUserId: String = ""
     private val _memories = MutableStateFlow<List<UserMemory>>(emptyList())
     val memories: StateFlow<List<UserMemory>> = _memories.asStateFlow()
 
     init {
-        loadMemories()
+        val initialUid = prefs.getAuthenticatedUserId()
+        if (!initialUid.isNullOrBlank()) {
+            switchUser(initialUid)
+        }
     }
 
-    private fun loadMemories() {
-        val saved = prefs.getMemories()
+    /**
+     * Switches the active memory context to the newly authenticated user UID.
+     */
+    fun switchUser(userId: String) {
+        val clean = userId.trim()
+        activeUserId = clean
+        if (clean.isBlank() || clean == "unauthenticated") {
+            _memories.value = emptyList()
+            return
+        }
+
+        val saved = prefs.getMemories(clean)
         if (saved.isEmpty()) {
-            // Seed default initial memories
+            // Seed default initial memories for this specific user
             val initial = listOf(
                 UserMemory(
                     id = "mem_creator",
@@ -36,9 +55,29 @@ class MemoryManager(context: Context, private val prefs: LocalChatPreferences) {
                 )
             )
             _memories.value = initial
-            prefs.saveMemories(initial)
+            prefs.saveMemories(initial, clean)
         } else {
             _memories.value = saved
+        }
+    }
+
+    /**
+     * Clears all in-memory items on logout or account switch.
+     */
+    fun clearAllMemories() {
+        _memories.value = emptyList()
+        if (activeUserId.isNotBlank() && activeUserId != "unauthenticated") {
+            prefs.saveMemories(emptyList(), activeUserId)
+        }
+    }
+
+    fun syncFromCloud(userId: String, cloudMemories: List<UserMemory>) {
+        if (userId.isBlank() || cloudMemories.isEmpty()) return
+        val currentLocal = prefs.getMemories(userId)
+        val merged = (cloudMemories + currentLocal).distinctBy { it.id }
+        prefs.saveMemories(merged, userId)
+        if (userId == activeUserId) {
+            _memories.value = merged
         }
     }
 
@@ -53,14 +92,18 @@ class MemoryManager(context: Context, private val prefs: LocalChatPreferences) {
         )
         val updated = listOf(newMem) + _memories.value
         _memories.value = updated
-        prefs.saveMemories(updated)
+        if (activeUserId.isNotBlank() && activeUserId != "unauthenticated") {
+            prefs.saveMemories(updated, activeUserId)
+        }
         return newMem
     }
 
     fun deleteMemory(memoryId: String) {
         val updated = _memories.value.filter { it.id != memoryId }
         _memories.value = updated
-        prefs.saveMemories(updated)
+        if (activeUserId.isNotBlank() && activeUserId != "unauthenticated") {
+            prefs.saveMemories(updated, activeUserId)
+        }
     }
 
     fun toggleMemory(memoryId: String) {
@@ -68,17 +111,14 @@ class MemoryManager(context: Context, private val prefs: LocalChatPreferences) {
             if (it.id == memoryId) it.copy(isEnabled = !it.isEnabled) else it
         }
         _memories.value = updated
-        prefs.saveMemories(updated)
-    }
-
-    fun clearAllMemories() {
-        _memories.value = emptyList()
-        prefs.saveMemories(emptyList())
+        if (activeUserId.isNotBlank() && activeUserId != "unauthenticated") {
+            prefs.saveMemories(updated, activeUserId)
+        }
     }
 
     /**
      * Privacy-conscious context builder: returns relevant active memories.
-     * Does not blindly dump everything; filters by enabled state and relevant keywords.
+     * Only uses memories belonging to the currently active authenticated user.
      */
     fun buildContextForPrompt(prompt: String, isMemoryEnabled: Boolean): String {
         if (!isMemoryEnabled) return ""
@@ -86,19 +126,15 @@ class MemoryManager(context: Context, private val prefs: LocalChatPreferences) {
         if (active.isEmpty()) return ""
 
         val lowerPrompt = prompt.lowercase()
-        // If query asks about identity or preferences, include matching memories
         val relevant = active.filter { memory ->
             val lowerMem = memory.content.lowercase()
-            // High priority memory always included: creator identity
             if (lowerMem.contains("rohit")) return@filter true
 
-            // Match words
             val words = lowerPrompt.split("\\s+".toRegex()).filter { it.length > 3 }
             words.any { word -> lowerMem.contains(word) } || memory.category == "preference"
         }.take(3)
 
         if (relevant.isEmpty()) return ""
-
         return relevant.joinToString("; ") { it.content }
     }
 }

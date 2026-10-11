@@ -10,7 +10,19 @@ import com.example.data.model.UserMemory
 import org.json.JSONArray
 import org.json.JSONObject
 
-class LocalChatPreferences(context: Context) {
+/**
+ * Enterprise-grade Local Persistence and Cache Manager for Gemo AI.
+ * Strictly guarantees UID-partitioned isolation for all user data:
+ * - Conversations
+ * - Messages
+ * - Settings
+ * - Memories
+ * - Custom display names
+ *
+ * Prevents cross-user data leakage by enforcing that every operation
+ * targets the authenticated Firebase UID and never falls back to shared global keys.
+ */
+class LocalChatPreferences(private val context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     companion object {
@@ -49,64 +61,24 @@ class LocalChatPreferences(context: Context) {
         private const val KEY_GOOGLE_PHOTO = "google_photo"
         private const val KEY_GOOGLE_ID_TOKEN = "google_id_token"
         private const val KEY_GOOGLE_LOGIN_TIME = "google_login_time"
+
+        // Per-user isolated key prefixes
+        private const val PREFIX_USER_CONVERSATIONS = "conversations_json_"
+        private const val PREFIX_USER_MESSAGES = "conv_messages_"
+        private const val PREFIX_USER_SETTINGS = "settings_json_"
+        private const val PREFIX_USER_MEMORIES = "memories_json_"
+        private const val PREFIX_USER_ACTIVE_CONV = "active_conv_"
+        private const val PREFIX_USER_CUSTOM_NAME = "custom_username_"
     }
 
     /**
-     * Resolves the user-facing display username.
-     * Guaranteed NEVER to return random internal device IDs or hardcoded usernames.
-     * Follows the exact priority:
-     * 1. User-selected Gemo AI username (if chosen).
-     * 2. Authenticated account display username.
-     * 3. Clear default fallback: "User".
+     * Retrieves the confirmed authenticated Firebase UID.
+     * Guaranteed to return null if the user is unauthenticated,
+     * preventing any assignment of data to arbitrary placeholder IDs.
      */
-    fun getDisplayUsername(): String {
+    fun getAuthenticatedUserId(): String? {
         try {
-            val fbUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
-            if (fbUser != null) {
-                if (!fbUser.displayName.isNullOrBlank()) return fbUser.displayName!!
-                if (!fbUser.email.isNullOrBlank()) return fbUser.email!!.substringBefore('@')
-                if (fbUser.isAnonymous) return "Guest User"
-            }
-        } catch (_: Exception) {}
-
-        val custom = getCustomUsername()
-        if (!custom.isNullOrBlank()) {
-            return custom
-        }
-
-        val session = getAuthSession()
-        if (session != null && session.username.isNotBlank()) {
-            return session.username
-        }
-
-        val storedUsername = prefs.getString(KEY_AUTH_USERNAME, null)?.trim()
-        if (!storedUsername.isNullOrBlank()) {
-            return storedUsername
-        }
-
-        return "User"
-    }
-
-    fun getCustomUsername(): String? {
-        val name = prefs.getString(KEY_CUSTOM_USERNAME, null)?.trim()
-        return if (name.isNullOrBlank()) null else name
-    }
-
-    fun setCustomUsername(username: String) {
-        val clean = username.trim()
-        if (clean.isNotBlank()) {
-            prefs.edit().putString(KEY_CUSTOM_USERNAME, clean).apply()
-        } else {
-            prefs.edit().remove(KEY_CUSTOM_USERNAME).apply()
-        }
-    }
-
-    /**
-     * Internal stable unique user ID used strictly for system routing & database isolation.
-     * Guaranteed to return the authenticated Firebase UID when signed in.
-     */
-    fun getUserId(): String {
-        try {
+            com.example.data.firebase.FirebaseInitializer.ensureInitialized(context)
             val fbUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
             if (fbUser != null && fbUser.uid.isNotBlank()) {
                 return fbUser.uid
@@ -123,14 +95,84 @@ class LocalChatPreferences(context: Context) {
             return storedAuthId
         }
 
-        val existing = prefs.getString(KEY_USER_ID, null)?.trim()
-        if (!existing.isNullOrBlank()) {
-            return existing
+        val googleId = prefs.getString(KEY_GOOGLE_USER_ID, null)?.trim()
+        if (!googleId.isNullOrBlank()) {
+            return googleId
         }
 
-        val newGuest = "guest_" + java.util.UUID.randomUUID().toString().replace("-", "").take(8)
-        prefs.edit().putString(KEY_USER_ID, newGuest).apply()
-        return newGuest
+        return null
+    }
+
+    /**
+     * Resolves the active user ID for internal system routing.
+     * Guaranteed never to generate or persist random guest IDs for unauthenticated sessions.
+     */
+    fun getUserId(): String {
+        return getAuthenticatedUserId() ?: "unauthenticated"
+    }
+
+    /**
+     * Resolves the user-facing display username.
+     * Priority:
+     * 1. Authenticated Firebase Auth user's display name or email prefix.
+     * 2. User-selected custom username for this UID.
+     * 3. Authenticated session username.
+     * 4. Clear fallback: "User".
+     */
+    fun getDisplayUsername(targetUserId: String? = null): String {
+        val uid = targetUserId ?: getAuthenticatedUserId()
+        try {
+            com.example.data.firebase.FirebaseInitializer.ensureInitialized(context)
+            val fbUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+            if (fbUser != null && (uid == null || fbUser.uid == uid)) {
+                if (!fbUser.displayName.isNullOrBlank()) return fbUser.displayName!!
+                if (!fbUser.email.isNullOrBlank()) return fbUser.email!!.substringBefore('@')
+                if (fbUser.isAnonymous) return "Guest User"
+            }
+        } catch (_: Exception) {}
+
+        if (uid != null) {
+            val custom = getCustomUsername(uid)
+            if (!custom.isNullOrBlank()) return custom
+        }
+
+        val session = getAuthSession()
+        if (session != null && (uid == null || session.userId == uid) && session.username.isNotBlank()) {
+            return session.username
+        }
+
+        val storedUsername = prefs.getString(KEY_AUTH_USERNAME, null)?.trim()
+        if (!storedUsername.isNullOrBlank()) {
+            return storedUsername
+        }
+
+        return "User"
+    }
+
+    fun getCustomUsername(targetUserId: String? = null): String? {
+        val uid = targetUserId ?: getAuthenticatedUserId() ?: return null
+        val name = prefs.getString("${PREFIX_USER_CUSTOM_NAME}$uid", null)?.trim()
+            ?: prefs.getString(KEY_CUSTOM_USERNAME, null)?.trim()
+        return if (name.isNullOrBlank()) null else name
+    }
+
+    fun setCustomUsername(username: String, targetUserId: String? = null) {
+        val uid = targetUserId ?: getAuthenticatedUserId()
+        val clean = username.trim()
+        val editor = prefs.edit()
+        if (uid != null) {
+            if (clean.isNotBlank()) {
+                editor.putString("${PREFIX_USER_CUSTOM_NAME}$uid", clean)
+            } else {
+                editor.remove("${PREFIX_USER_CUSTOM_NAME}$uid")
+            }
+        }
+        if (clean.isNotBlank()) {
+            editor.putString(KEY_CUSTOM_USERNAME, clean)
+        } else {
+            editor.remove(KEY_CUSTOM_USERNAME)
+        }
+        editor.apply()
     }
 
     // --- AUTHENTICATION SESSION METHODS ---
@@ -172,11 +214,12 @@ class LocalChatPreferences(context: Context) {
             .remove(KEY_SESSION_EXPIRY)
             .remove(KEY_CUSTOM_USERNAME)
             .remove(KEY_USER_ID)
+            .remove(KEY_ACTIVE_CONV)
             .apply()
     }
 
     fun isLoggedIn(): Boolean {
-        return getAuthSession() != null
+        return getAuthenticatedUserId() != null
     }
 
     fun getSessionToken(): String? {
@@ -190,16 +233,6 @@ class LocalChatPreferences(context: Context) {
             username = session.username,
             sessionToken = session.sessionToken
         )
-    }
-
-    fun getLegacyGuestUserId(): String? {
-        return prefs.getString(KEY_USER_ID, null)
-    }
-
-    fun setUserId(id: String) {
-        if (id.isNotBlank()) {
-            prefs.edit().putString(KEY_USER_ID, id.trim()).apply()
-        }
     }
 
     fun saveGoogleUserProfile(profile: com.example.data.model.GoogleUserProfile) {
@@ -223,7 +256,7 @@ class LocalChatPreferences(context: Context) {
         val googleId = prefs.getString(KEY_GOOGLE_USER_ID, null) ?: return null
         if (googleId.isBlank()) return null
         val username = prefs.getString(KEY_GOOGLE_USERNAME, null)?.ifBlank { null }
-            ?: getDisplayUsername()
+            ?: getDisplayUsername(googleId)
         return com.example.data.model.GoogleUserProfile(
             googleUserId = googleId,
             email = prefs.getString(KEY_GOOGLE_EMAIL, "") ?: "",
@@ -247,16 +280,48 @@ class LocalChatPreferences(context: Context) {
             .apply()
     }
 
-    fun isLoggedInWithGoogle(): Boolean {
-        return !prefs.getString(KEY_GOOGLE_USER_ID, null).isNullOrBlank()
+    // --- PER-USER SETTINGS ISOLATION ---
+
+    private fun getSettingsKey(targetUserId: String?): String {
+        val uid = (targetUserId ?: getAuthenticatedUserId() ?: "").trim()
+        return if (uid.isNotBlank() && uid != "unauthenticated") {
+            "${PREFIX_USER_SETTINGS}$uid"
+        } else {
+            "settings_json_default"
+        }
     }
 
-    fun getSettings(): LlmSettings {
+    fun getSettings(targetUserId: String? = null): LlmSettings {
+        val key = getSettingsKey(targetUserId)
+        val jsonStr = prefs.getString(key, null)
+        if (!jsonStr.isNullOrBlank()) {
+            try {
+                val obj = JSONObject(jsonStr)
+                val rawModel = obj.optString(KEY_MODEL_NAME, "qwen2.5-1.5b-instruct-q4_k_m.gguf")
+                val exactGguf = LlmSettings.ensureGgufFilename(rawModel)
+                return LlmSettings(
+                    firebaseUrl = obj.optString(KEY_FIREBASE_URL, LlmSettings.DEFAULT_FIREBASE_URL),
+                    provider = obj.optString(KEY_PROVIDER, "Qwen"),
+                    modelName = exactGguf,
+                    themeMode = obj.optString(KEY_THEME, "SYSTEM"),
+                    responseTimeoutSeconds = obj.optInt(KEY_TIMEOUT, 45),
+                    maxTokens = obj.optInt(KEY_MAX_TOKENS, 2048),
+                    temperature = obj.optDouble(KEY_TEMPERATURE, 0.7).toFloat(),
+                    agentModeEnabled = obj.optBoolean(KEY_AGENT_MODE, false),
+                    memoryEnabled = obj.optBoolean(KEY_MEMORY_ENABLED, true),
+                    visionEnabled = obj.optBoolean(KEY_VISION_ENABLED, true),
+                    systemInstruction = obj.optString(KEY_SYSTEM_INSTRUCTION, LlmSettings.DEFAULT_SYSTEM_INSTRUCTION),
+                    speechInputLanguage = obj.optString(KEY_SPEECH_LANG, "auto"),
+                    translatorEnabled = obj.optBoolean(KEY_TRANSLATOR_ENABLED, true)
+                )
+            } catch (_: Exception) {}
+        }
+
+        // Fallback to legacy single settings if this user does not have scoped settings yet
         val rawModel = prefs.getString(KEY_MODEL_NAME, "qwen2.5-1.5b-instruct-q4_k_m.gguf") ?: "qwen2.5-1.5b-instruct-q4_k_m.gguf"
         val exactGguf = LlmSettings.ensureGgufFilename(rawModel)
         return LlmSettings(
-            firebaseUrl = prefs.getString(KEY_FIREBASE_URL, LlmSettings.DEFAULT_FIREBASE_URL)
-                ?: LlmSettings.DEFAULT_FIREBASE_URL,
+            firebaseUrl = prefs.getString(KEY_FIREBASE_URL, LlmSettings.DEFAULT_FIREBASE_URL) ?: LlmSettings.DEFAULT_FIREBASE_URL,
             provider = prefs.getString(KEY_PROVIDER, "Qwen") ?: "Qwen",
             modelName = exactGguf,
             themeMode = prefs.getString(KEY_THEME, "SYSTEM") ?: "SYSTEM",
@@ -266,62 +331,77 @@ class LocalChatPreferences(context: Context) {
             agentModeEnabled = prefs.getBoolean(KEY_AGENT_MODE, false),
             memoryEnabled = prefs.getBoolean(KEY_MEMORY_ENABLED, true),
             visionEnabled = prefs.getBoolean(KEY_VISION_ENABLED, true),
-            systemInstruction = prefs.getString(KEY_SYSTEM_INSTRUCTION, LlmSettings.DEFAULT_SYSTEM_INSTRUCTION)
-                ?: LlmSettings.DEFAULT_SYSTEM_INSTRUCTION,
+            systemInstruction = prefs.getString(KEY_SYSTEM_INSTRUCTION, LlmSettings.DEFAULT_SYSTEM_INSTRUCTION) ?: LlmSettings.DEFAULT_SYSTEM_INSTRUCTION,
             speechInputLanguage = prefs.getString(KEY_SPEECH_LANG, "auto") ?: "auto",
             translatorEnabled = prefs.getBoolean(KEY_TRANSLATOR_ENABLED, true)
         )
     }
 
-    fun saveSettings(settings: LlmSettings) {
+    fun saveSettings(settings: LlmSettings, targetUserId: String? = null) {
+        val key = getSettingsKey(targetUserId)
         val exactGguf = LlmSettings.ensureGgufFilename(settings.modelName)
-        prefs.edit()
-            .putString(KEY_FIREBASE_URL, settings.firebaseUrl)
-            .putString(KEY_PROVIDER, settings.provider)
-            .putString(KEY_MODEL_NAME, exactGguf)
-            .putString(KEY_THEME, settings.themeMode)
-            .putInt(KEY_TIMEOUT, settings.responseTimeoutSeconds)
-            .putInt(KEY_MAX_TOKENS, settings.maxTokens)
-            .putFloat(KEY_TEMPERATURE, settings.temperature)
-            .putBoolean(KEY_AGENT_MODE, settings.agentModeEnabled)
-            .putBoolean(KEY_MEMORY_ENABLED, settings.memoryEnabled)
-            .putBoolean(KEY_VISION_ENABLED, settings.visionEnabled)
-            .putString(KEY_SYSTEM_INSTRUCTION, settings.systemInstruction)
-            .putString(KEY_SPEECH_LANG, settings.speechInputLanguage)
-            .putBoolean(KEY_TRANSLATOR_ENABLED, settings.translatorEnabled)
-            .apply()
+        try {
+            val obj = JSONObject().apply {
+                put(KEY_FIREBASE_URL, settings.firebaseUrl)
+                put(KEY_PROVIDER, settings.provider)
+                put(KEY_MODEL_NAME, exactGguf)
+                put(KEY_THEME, settings.themeMode)
+                put(KEY_TIMEOUT, settings.responseTimeoutSeconds)
+                put(KEY_MAX_TOKENS, settings.maxTokens)
+                put(KEY_TEMPERATURE, settings.temperature.toDouble())
+                put(KEY_AGENT_MODE, settings.agentModeEnabled)
+                put(KEY_MEMORY_ENABLED, settings.memoryEnabled)
+                put(KEY_VISION_ENABLED, settings.visionEnabled)
+                put(KEY_SYSTEM_INSTRUCTION, settings.systemInstruction)
+                put(KEY_SPEECH_LANG, settings.speechInputLanguage)
+                put(KEY_TRANSLATOR_ENABLED, settings.translatorEnabled)
+            }
+            prefs.edit().putString(key, obj.toString()).apply()
+        } catch (_: Exception) {}
     }
 
+    // --- PER-USER CONVERSATION & MESSAGE ISOLATION ---
+
     private fun getConversationsKey(targetUserId: String?): String {
-        val uid = (targetUserId ?: getUserId()).trim()
-        return if (uid.isNotBlank()) "conversations_json_$uid" else KEY_CONVERSATIONS
+        val uid = (targetUserId ?: getAuthenticatedUserId() ?: "").trim()
+        return if (uid.isNotBlank() && uid != "unauthenticated") {
+            "${PREFIX_USER_CONVERSATIONS}$uid"
+        } else {
+            "conversations_json_unauthenticated"
+        }
     }
 
     private fun getMessagesKey(conversationId: String, targetUserId: String?): String {
-        val uid = (targetUserId ?: getUserId()).trim()
-        return if (uid.isNotBlank()) "conv_messages_${uid}_$conversationId" else (PREFIX_MESSAGES + conversationId)
+        val uid = (targetUserId ?: getAuthenticatedUserId() ?: "").trim()
+        return if (uid.isNotBlank() && uid != "unauthenticated") {
+            "${PREFIX_USER_MESSAGES}${uid}_$conversationId"
+        } else {
+            "conv_messages_unauthenticated_$conversationId"
+        }
     }
 
     fun getActiveConversationId(targetUserId: String? = null): String? {
-        val uid = (targetUserId ?: getUserId()).trim()
-        return prefs.getString("${KEY_ACTIVE_CONV}_$uid", null) ?: prefs.getString(KEY_ACTIVE_CONV, null)
+        val uid = (targetUserId ?: getAuthenticatedUserId() ?: "").trim()
+        if (uid.isBlank() || uid == "unauthenticated") return null
+        return prefs.getString("${PREFIX_USER_ACTIVE_CONV}$uid", null)
     }
 
     fun setActiveConversationId(id: String?, targetUserId: String? = null) {
-        val uid = (targetUserId ?: getUserId()).trim()
+        val uid = (targetUserId ?: getAuthenticatedUserId() ?: "").trim()
+        if (uid.isBlank() || uid == "unauthenticated") return
         val editor = prefs.edit()
         if (id != null) {
-            editor.putString("${KEY_ACTIVE_CONV}_$uid", id)
-            editor.putString(KEY_ACTIVE_CONV, id)
+            editor.putString("${PREFIX_USER_ACTIVE_CONV}$uid", id)
         } else {
-            editor.remove("${KEY_ACTIVE_CONV}_$uid")
-            editor.remove(KEY_ACTIVE_CONV)
+            editor.remove("${PREFIX_USER_ACTIVE_CONV}$uid")
         }
         editor.apply()
     }
 
     fun getConversations(targetUserId: String? = null): List<Conversation> {
-        val uid = (targetUserId ?: getUserId()).trim()
+        val uid = (targetUserId ?: getAuthenticatedUserId() ?: "").trim()
+        if (uid.isBlank() || uid == "unauthenticated") return emptyList()
+
         val key = getConversationsKey(uid)
         val jsonStr = prefs.getString(key, null) ?: return emptyList()
         val allConvs = parseConversationsJson(jsonStr)
@@ -354,11 +434,14 @@ class LocalChatPreferences(context: Context) {
     }
 
     fun saveConversations(conversations: List<Conversation>, targetUserId: String? = null) {
+        val uid = (targetUserId ?: getAuthenticatedUserId() ?: "").trim()
+        if (uid.isBlank() || uid == "unauthenticated") return
+
         try {
-            val key = getConversationsKey(targetUserId)
-            val uid = (targetUserId ?: getUserId()).trim().lowercase()
+            val key = getConversationsKey(uid)
             val array = JSONArray()
             for (conv in conversations) {
+                // Ensure every conversation saved in this user's storage is tagged with this user's UID
                 val obj = JSONObject().apply {
                     put("id", conv.id)
                     put("title", conv.title)
@@ -366,21 +449,24 @@ class LocalChatPreferences(context: Context) {
                     put("updatedAt", conv.updatedAt)
                     put("model", conv.model)
                     put("lastMessage", conv.lastMessage)
-                    put("userId", if (conv.userId.isNotBlank()) conv.userId else uid)
+                    put("userId", uid)
                 }
                 array.put(obj)
             }
             prefs.edit().putString(key, array.toString()).apply()
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     fun getMessages(conversationId: String, targetUserId: String? = null): List<ChatMessage> {
-        val key = getMessagesKey(conversationId, targetUserId)
-        var jsonStr = prefs.getString(key, null)
-        if (jsonStr == null) {
-            jsonStr = prefs.getString(PREFIX_MESSAGES + conversationId, null) ?: return emptyList()
-        }
+        val uid = (targetUserId ?: getAuthenticatedUserId() ?: "").trim()
+        if (uid.isBlank() || uid == "unauthenticated") return emptyList()
+
+        val key = getMessagesKey(conversationId, uid)
+        val jsonStr = prefs.getString(key, null) ?: return emptyList()
+        return parseMessagesJson(jsonStr, conversationId)
+    }
+
+    private fun parseMessagesJson(jsonStr: String, conversationId: String): List<ChatMessage> {
         return try {
             val array = JSONArray(jsonStr)
             val list = mutableListOf<ChatMessage>()
@@ -417,8 +503,11 @@ class LocalChatPreferences(context: Context) {
     }
 
     fun saveMessages(conversationId: String, messages: List<ChatMessage>, targetUserId: String? = null) {
+        val uid = (targetUserId ?: getAuthenticatedUserId() ?: "").trim()
+        if (uid.isBlank() || uid == "unauthenticated") return
+
         try {
-            val key = getMessagesKey(conversationId, targetUserId)
+            val key = getMessagesKey(conversationId, uid)
             val array = JSONArray()
             for (msg in messages) {
                 val obj = JSONObject().apply {
@@ -445,13 +534,102 @@ class LocalChatPreferences(context: Context) {
                 array.put(obj)
             }
             prefs.edit().putString(key, array.toString()).apply()
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     fun deleteConversationData(conversationId: String, targetUserId: String? = null) {
-        val key = getMessagesKey(conversationId, targetUserId)
-        prefs.edit().remove(key).remove(PREFIX_MESSAGES + conversationId).apply()
+        val uid = (targetUserId ?: getAuthenticatedUserId() ?: "").trim()
+        val editor = prefs.edit()
+        if (uid.isNotBlank() && uid != "unauthenticated") {
+            editor.remove(getMessagesKey(conversationId, uid))
+        }
+        editor.remove("${PREFIX_USER_ACTIVE_CONV}$uid")
+        editor.apply()
+    }
+
+    /**
+     * Safely migrates legacy un-scoped conversations to the authenticated user's key
+     * ONLY if ownership can be verified (matching userId).
+     * Never assigns ambiguous legacy data to an account automatically.
+     */
+    fun migrateLegacyLocalDataForUser(authenticatedUid: String) {
+        if (authenticatedUid.isBlank() || authenticatedUid == "unauthenticated") return
+        val userConvKey = getConversationsKey(authenticatedUid)
+
+        // Only migrate if user does not already have isolated local conversations
+        if (!prefs.contains(userConvKey)) {
+            val legacyJson = prefs.getString(KEY_CONVERSATIONS, null)
+            if (!legacyJson.isNullOrBlank()) {
+                val legacyConvs = parseConversationsJson(legacyJson)
+                val ownedConvs = legacyConvs.filter { it.userId == authenticatedUid }
+                if (ownedConvs.isNotEmpty()) {
+                    saveConversations(ownedConvs, authenticatedUid)
+                    for (conv in ownedConvs) {
+                        val legacyMsgJson = prefs.getString("${PREFIX_MESSAGES}${conv.id}", null)
+                        if (!legacyMsgJson.isNullOrBlank()) {
+                            prefs.edit().putString(getMessagesKey(conv.id, authenticatedUid), legacyMsgJson).apply()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- PER-USER MEMORY ISOLATION ---
+
+    private fun getMemoriesKey(targetUserId: String?): String {
+        val uid = (targetUserId ?: getAuthenticatedUserId() ?: "").trim()
+        return if (uid.isNotBlank() && uid != "unauthenticated") {
+            "${PREFIX_USER_MEMORIES}$uid"
+        } else {
+            "memories_json_default"
+        }
+    }
+
+    fun getMemories(targetUserId: String? = null): List<UserMemory> {
+        val key = getMemoriesKey(targetUserId)
+        val jsonStr = prefs.getString(key, null) ?: return emptyList()
+        return parseMemoriesJson(jsonStr)
+    }
+
+    private fun parseMemoriesJson(jsonStr: String): List<UserMemory> {
+        return try {
+            val array = JSONArray(jsonStr)
+            val list = mutableListOf<UserMemory>()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                list.add(
+                    UserMemory(
+                        id = obj.getString("id"),
+                        content = obj.getString("content"),
+                        category = obj.optString("category", "general"),
+                        createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
+                        isEnabled = obj.optBoolean("isEnabled", true)
+                    )
+                )
+            }
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun saveMemories(memories: List<UserMemory>, targetUserId: String? = null) {
+        val key = getMemoriesKey(targetUserId)
+        try {
+            val array = JSONArray()
+            for (mem in memories) {
+                val obj = JSONObject().apply {
+                    put("id", mem.id)
+                    put("content", mem.content)
+                    put("category", mem.category)
+                    put("createdAt", mem.createdAt)
+                    put("isEnabled", mem.isEnabled)
+                }
+                array.put(obj)
+            }
+            prefs.edit().putString(key, array.toString()).apply()
+        } catch (_: Exception) {}
     }
 
     fun getSavedModels(): List<LlmModelOption> {
@@ -499,49 +677,7 @@ class LocalChatPreferences(context: Context) {
                 array.put(obj)
             }
             prefs.edit().putString(KEY_SAVED_MODELS, array.toString()).apply()
-        } catch (_: Exception) {
-        }
-    }
-
-    fun getMemories(): List<UserMemory> {
-        val jsonStr = prefs.getString(KEY_SAVED_MEMORIES, null) ?: return emptyList()
-        return try {
-            val array = JSONArray(jsonStr)
-            val list = mutableListOf<UserMemory>()
-            for (i in 0 until array.length()) {
-                val obj = array.getJSONObject(i)
-                list.add(
-                    UserMemory(
-                        id = obj.getString("id"),
-                        content = obj.getString("content"),
-                        category = obj.optString("category", "general"),
-                        createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
-                        isEnabled = obj.optBoolean("isEnabled", true)
-                    )
-                )
-            }
-            list
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    fun saveMemories(memories: List<UserMemory>) {
-        try {
-            val array = JSONArray()
-            for (mem in memories) {
-                val obj = JSONObject().apply {
-                    put("id", mem.id)
-                    put("content", mem.content)
-                    put("category", mem.category)
-                    put("createdAt", mem.createdAt)
-                    put("isEnabled", mem.isEnabled)
-                }
-                array.put(obj)
-            }
-            prefs.edit().putString(KEY_SAVED_MEMORIES, array.toString()).apply()
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     fun isOnboardingCompleted(): Boolean {

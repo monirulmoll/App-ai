@@ -133,6 +133,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logout(onComplete: () -> Unit = {}) {
+        _inputText.value = ""
+        _selectedImageUri.value = null
+        _selectedImageBase64.value = null
+        _searchQuery.value = ""
+        _errorMessage.value = null
+        _showModelSelector.value = false
+        _showSettingsDialog.value = false
+        _showRenameDialog.value = false
+        _conversationToRename.value = null
+        _isForceStopped.value = false
+        _showWorkspaceDialog.value = false
+        _showMemoryDialog.value = false
+        _showImageViewerDialog.value = false
+        _viewingImageUrl.value = null
+
         repository.logout {
             _currentScreen.value = AppScreen.LOGIN
             onComplete()

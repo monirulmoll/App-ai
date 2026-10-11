@@ -2,6 +2,7 @@ package com.example.data.auth
 
 import android.content.Context
 import android.util.Log
+import com.example.data.firebase.FirebaseInitializer
 import com.example.data.local.LocalChatPreferences
 import com.example.data.model.AuthSession
 import com.example.data.model.UserProfile
@@ -30,7 +31,10 @@ import kotlin.coroutines.resume
 class GemoAuthManager(private val context: Context) {
     private val tag = "GemoAuthManager"
     private val prefs = LocalChatPreferences(context)
-    private val firebaseAuth: FirebaseAuth = FirebaseAuth.getInstance()
+    private val firebaseAuth: FirebaseAuth by lazy {
+        FirebaseInitializer.ensureInitialized(context)
+        FirebaseAuth.getInstance()
+    }
 
     private val _currentSession = MutableStateFlow<AuthSession?>(loadInitialSession())
     val currentSession: StateFlow<AuthSession?> = _currentSession.asStateFlow()
@@ -39,86 +43,103 @@ class GemoAuthManager(private val context: Context) {
     val currentUserProfile: StateFlow<UserProfile?> = _currentUserProfile.asStateFlow()
 
     val isLoggedIn: Boolean
-        get() = firebaseAuth.currentUser != null || (_currentSession.value != null && !_currentSession.value!!.isExpired)
+        get() = try {
+            firebaseAuth.currentUser != null || (_currentSession.value != null && !_currentSession.value!!.isExpired)
+        } catch (_: Exception) {
+            _currentSession.value != null && !_currentSession.value!!.isExpired
+        }
 
     val currentFirebaseUser: FirebaseUser?
-        get() = firebaseAuth.currentUser
+        get() = try { firebaseAuth.currentUser } catch (_: Exception) { null }
 
     private val database: FirebaseDatabase by lazy {
         val settings = prefs.getSettings()
-        try {
-            FirebaseDatabase.getInstance(settings.firebaseUrl)
-        } catch (_: Exception) {
-            FirebaseDatabase.getInstance()
-        }
+        FirebaseInitializer.getSafeDatabase(context, settings.firebaseUrl)
+            ?: run {
+                FirebaseInitializer.ensureInitialized(context, settings.firebaseUrl)
+                FirebaseDatabase.getInstance()
+            }
     }
 
     init {
-        firebaseAuth.addAuthStateListener { auth ->
-            val user = auth.currentUser
-            if (user != null) {
-                val displayName = user.displayName?.ifBlank { null }
-                    ?: user.email?.substringBefore('@')
-                    ?: if (user.isAnonymous) "Guest User" else "User"
-                val session = AuthSession(
-                    sessionToken = user.uid,
-                    userId = user.uid,
-                    username = displayName,
-                    email = user.email,
-                    isAnonymous = user.isAnonymous,
-                    providerId = user.providerData.firstOrNull()?.providerId ?: if (user.isAnonymous) "anonymous" else "password",
-                    expiresAt = System.currentTimeMillis() + (30L * 24 * 60 * 60 * 1000L)
-                )
-                _currentSession.value = session
-                _currentUserProfile.value = UserProfile(
-                    userId = user.uid,
-                    username = displayName,
-                    email = user.email,
-                    isAnonymous = user.isAnonymous,
-                    providerId = session.providerId,
-                    sessionToken = user.uid
-                )
-                prefs.saveAuthSession(session)
-            } else {
-                val cached = prefs.getAuthSession()
-                if (cached != null && cached.sessionToken.isNotBlank()) {
-                    // Do not wipe cached session immediately if offline
+        try {
+            FirebaseInitializer.ensureInitialized(context)
+            firebaseAuth.addAuthStateListener { auth ->
+                val user = auth.currentUser
+                if (user != null) {
+                    val displayName = user.displayName?.ifBlank { null }
+                        ?: user.email?.substringBefore('@')
+                        ?: if (user.isAnonymous) "Guest User" else "User"
+                    val session = AuthSession(
+                        sessionToken = user.uid,
+                        userId = user.uid,
+                        username = displayName,
+                        email = user.email,
+                        isAnonymous = user.isAnonymous,
+                        providerId = user.providerData.firstOrNull()?.providerId ?: if (user.isAnonymous) "anonymous" else "password",
+                        expiresAt = System.currentTimeMillis() + (30L * 24 * 60 * 60 * 1000L)
+                    )
+                    _currentSession.value = session
+                    _currentUserProfile.value = UserProfile(
+                        userId = user.uid,
+                        username = displayName,
+                        email = user.email,
+                        isAnonymous = user.isAnonymous,
+                        providerId = session.providerId,
+                        sessionToken = user.uid
+                    )
+                    prefs.saveAuthSession(session)
                 } else {
-                    _currentSession.value = null
-                    _currentUserProfile.value = null
+                    val cached = prefs.getAuthSession()
+                    if (cached != null && cached.sessionToken.isNotBlank()) {
+                        // Do not wipe cached session immediately if offline
+                    } else {
+                        _currentSession.value = null
+                        _currentUserProfile.value = null
+                    }
                 }
             }
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to attach Firebase Auth listener: ${e.message}")
         }
     }
 
     private fun loadInitialSession(): AuthSession? {
-        val user = firebaseAuth.currentUser
-        if (user != null) {
-            val name = user.displayName?.ifBlank { null } ?: user.email?.substringBefore('@') ?: if (user.isAnonymous) "Guest User" else "User"
-            return AuthSession(
-                sessionToken = user.uid,
-                userId = user.uid,
-                username = name,
-                email = user.email,
-                isAnonymous = user.isAnonymous,
-                providerId = user.providerData.firstOrNull()?.providerId ?: if (user.isAnonymous) "anonymous" else "password"
-            )
+        try {
+            val user = firebaseAuth.currentUser
+            if (user != null) {
+                val name = user.displayName?.ifBlank { null } ?: user.email?.substringBefore('@') ?: if (user.isAnonymous) "Guest User" else "User"
+                return AuthSession(
+                    sessionToken = user.uid,
+                    userId = user.uid,
+                    username = name,
+                    email = user.email,
+                    isAnonymous = user.isAnonymous,
+                    providerId = user.providerData.firstOrNull()?.providerId ?: if (user.isAnonymous) "anonymous" else "password"
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to load initial Firebase session: ${e.message}")
         }
         return prefs.getAuthSession()
     }
 
     private fun loadInitialProfile(): UserProfile? {
-        val user = firebaseAuth.currentUser
-        if (user != null) {
-            val name = user.displayName?.ifBlank { null } ?: user.email?.substringBefore('@') ?: if (user.isAnonymous) "Guest User" else "User"
-            return UserProfile(
-                userId = user.uid,
-                username = name,
-                email = user.email,
-                isAnonymous = user.isAnonymous,
-                providerId = user.providerData.firstOrNull()?.providerId ?: if (user.isAnonymous) "anonymous" else "password",
-                sessionToken = user.uid
-            )
+        try {
+            val user = firebaseAuth.currentUser
+            if (user != null) {
+                val name = user.displayName?.ifBlank { null } ?: user.email?.substringBefore('@') ?: if (user.isAnonymous) "Guest User" else "User"
+                return UserProfile(
+                    userId = user.uid,
+                    username = name,
+                    email = user.email,
+                    isAnonymous = user.isAnonymous,
+                    providerId = user.providerData.firstOrNull()?.providerId ?: if (user.isAnonymous) "anonymous" else "password",
+                    sessionToken = user.uid
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to load initial Firebase profile: ${e.message}")
         }
         return prefs.getUserProfile()
     }

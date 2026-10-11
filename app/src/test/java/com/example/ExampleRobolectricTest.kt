@@ -18,4 +18,11 @@ class ExampleRobolectricTest {
     val appName = context.getString(R.string.app_name)
     assertEquals("Gemo AI", appName)
   }
+
+  @Test
+  fun `test chat view model creation and activity`() {
+    val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val vm = com.example.ui.viewmodel.ChatViewModel(context)
+    org.junit.Assert.assertNotNull(vm)
+  }
 }

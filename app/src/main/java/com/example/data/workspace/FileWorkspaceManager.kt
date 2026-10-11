@@ -13,39 +13,66 @@ import java.io.FileOutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
+/**
+ * Enterprise-grade Workspace Manager for Gemo AI.
+ * Strictly isolates workspace files per authenticated user UID into separate directories:
+ * filesDir/workspace_{uid}/
+ *
+ * Guarantees zero cross-user file leakage on device disk.
+ */
 class FileWorkspaceManager(private val context: Context) {
 
-    val workspaceDir: File = File(context.filesDir, "gemo_workspace").apply {
-        if (!exists()) mkdirs()
-    }
+    private var activeUserId: String = ""
+
+    val workspaceDir: File
+        get() {
+            val safeUid = sanitizeDirectoryName(activeUserId.ifBlank { "default" })
+            val dir = File(context.filesDir, "workspace_$safeUid")
+            if (!dir.exists()) dir.mkdirs()
+            return dir
+        }
 
     private val _files = MutableStateFlow<List<WorkspaceFile>>(emptyList())
     val files: StateFlow<List<WorkspaceFile>> = _files.asStateFlow()
 
     init {
-        cleanupDemoFilesIfPresent()
         refreshFiles()
     }
 
+    private fun sanitizeDirectoryName(raw: String): String {
+        return raw.trim()
+            .replace("/", "_")
+            .replace("\\", "_")
+            .replace(".", "_")
+            .replace("#", "_")
+            .replace("$", "_")
+            .replace("[", "_")
+            .replace("]", "_")
+            .ifBlank { "default" }
+    }
+
     /**
-     * Ensures NO demo, fake, or placeholder files are pre-loaded into the workspace.
+     * Switches the active workspace directory to the target user's isolated storage.
      */
-    private fun cleanupDemoFilesIfPresent() {
-        val demoFiles = listOf("welcome.py", "project_notes.md")
-        demoFiles.forEach { name ->
-            val target = File(workspaceDir, name)
-            if (target.exists()) {
-                val text = try { target.readText() } catch (_: Exception) { "" }
-                if (text.contains("Welcome to Gemo AI Code Workspace") || text.contains("Gemo AI Next-Gen Workspace")) {
-                    target.delete()
-                }
-            }
+    fun switchUser(userId: String) {
+        val clean = userId.trim()
+        activeUserId = clean
+        if (clean.isNotBlank() && clean != "unauthenticated") {
+            refreshFiles()
+        } else {
+            _files.value = emptyList()
         }
     }
 
+    fun clearActiveFiles() {
+        activeUserId = ""
+        _files.value = emptyList()
+    }
+
     fun refreshFiles() {
+        val currentDir = workspaceDir
         val list = mutableListOf<WorkspaceFile>()
-        workspaceDir.listFiles()?.forEach { file ->
+        currentDir.listFiles()?.forEach { file ->
             if (file.isFile) {
                 val ext = file.extension.lowercase()
                 val preview = try {
@@ -177,9 +204,6 @@ class FileWorkspaceManager(private val context: Context) {
         }
     }
 
-    /**
-     * Exports all workspace files as a ZIP archive for whole-project download.
-     */
     suspend fun exportProjectZip(outputZipFile: File): Result<File> = withContext(Dispatchers.IO) {
         try {
             outputZipFile.parentFile?.mkdirs()
@@ -211,10 +235,6 @@ class FileWorkspaceManager(private val context: Context) {
         }
     }
 
-    /**
-     * Clears all workspace files from disk and memory when switching or logging out accounts.
-     * Prevents cross-user workspace file leaks.
-     */
     fun clearAllFiles() {
         try {
             workspaceDir.listFiles()?.forEach { file ->

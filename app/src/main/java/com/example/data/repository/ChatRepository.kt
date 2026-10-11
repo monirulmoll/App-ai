@@ -35,6 +35,12 @@ private data class RequestLangInfo(
     val isLatinScript: Boolean
 )
 
+/**
+ * Enterprise Single Source of Truth Repository for Gemo AI.
+ * Coordinates Firebase Authentication, Firebase Realtime Database,
+ * per-UID local caching, workspace files, and user memory.
+ * Guarantees zero cross-account data leakage.
+ */
 class ChatRepository(private val context: Context) {
     val authManager = com.example.data.auth.GemoAuthManager(context)
     val googleAuthManager = GoogleAuthManager(context)
@@ -87,37 +93,63 @@ class ChatRepository(private val context: Context) {
     private val stoppedRequestIds = mutableSetOf<String>()
 
     init {
-        // Initialize Firebase with current saved URL
+        // Initialize Firebase RTDB connection
         val currentSettings = prefs.getSettings()
         rtdbManager.initialize(currentSettings.firebaseUrl)
 
-        // Load existing conversations
-        val savedConversations = prefs.getConversations().toMutableList()
-        _conversations.value = savedConversations
+        // Reactively observe authentication state to guarantee clean account switching
+        scope.launch {
+            authManager.currentSession.collect { session ->
+                if (session != null && session.userId.isNotBlank()) {
+                    val uid = session.userId
+                    _displayUsername.value = session.username
+                    workspaceManager.switchUser(uid)
+                    memoryManager.switchUser(uid)
 
-        val activeId = prefs.getActiveConversationId()
-        val initialConv = savedConversations.find { it.id == activeId }
-            ?: savedConversations.firstOrNull()
+                    // Load user-scoped settings
+                    val userSettings = prefs.getSettings(uid)
+                    _settings.value = userSettings
 
-        if (initialConv != null) {
-            selectConversation(initialConv.id)
-        } else {
-            // Create initial welcome chat
-            createNewConversation()
-        }
+                    // Load user-scoped cached conversations for instant responsive UI
+                    prefs.migrateLegacyLocalDataForUser(uid)
+                    val localConvs = prefs.getConversations(uid)
+                    _conversations.value = localConvs
+                    val activeId = prefs.getActiveConversationId(uid)
+                    val initialConv = localConvs.find { it.id == activeId } ?: localConvs.firstOrNull()
+                    if (initialConv != null) {
+                        selectConversation(initialConv.id)
+                    } else {
+                        _currentConversation.value = null
+                        _messages.value = emptyList()
+                    }
 
-        // If user already logged in with Google, restore cloud conversations from RTDB
-        googleAuthManager.currentUser.value?.let { googleUser ->
-            restoreGoogleUserCloudChats(googleUser.googleUserId)
+                    // Authoritatively restore from Firebase Realtime Database
+                    restoreUserCloudChats(uid)
+                } else {
+                    // Logged out / unauthenticated: strictly clear visible UI and detach listeners
+                    rtdbManager.stopListeningToConversation()
+                    rtdbManager.cancelResponseTimeout()
+                    workspaceManager.clearActiveFiles()
+                    memoryManager.clearAllMemories()
+                    _conversations.value = emptyList()
+                    _messages.value = emptyList()
+                    _currentConversation.value = null
+                    _displayUsername.value = "User"
+                    pendingRequestId = null
+                    isCurrentlyGeneratingFlow.value = false
+                    stoppedRequestIds.clear()
+                }
+            }
         }
 
         // Listen for active model updates written by backend to "/model"
         scope.launch {
             rtdbManager.activeModelFromRtdb.collect { activeModel ->
                 if (!activeModel.isNullOrBlank()) {
+                    val currentUid = getActiveUserId()
                     val updatedSettings = _settings.value.copy(modelName = activeModel)
                     _settings.value = updatedSettings
-                    prefs.saveSettings(updatedSettings)
+                    prefs.saveSettings(updatedSettings, currentUid)
 
                     val currentConvId = _currentConversation.value?.id
                     if (currentConvId != null) {
@@ -125,7 +157,7 @@ class ChatRepository(private val context: Context) {
                             if (it.id == currentConvId) it.copy(model = activeModel) else it
                         }
                         _conversations.value = updatedList
-                        prefs.saveConversations(updatedList)
+                        prefs.saveConversations(updatedList, currentUid)
                         _currentConversation.value = updatedList.find { it.id == currentConvId }
                     }
                 }
@@ -134,29 +166,34 @@ class ChatRepository(private val context: Context) {
 
         // Send initial model switch request to "/model/request"
         val initialGguf = LlmSettings.ensureGgufFilename(currentSettings.modelName)
-        rtdbManager.requestModelSwitch(initialGguf)
-
-        // Sync initial settings & features to RTDB
-        rtdbManager.syncSettingsToRtdb(currentSettings)
+        rtdbManager.requestModelSwitch(initialGguf, getActiveUserId())
 
         // Sync initial memories to RTDB if connected
         scope.launch {
             memoryManager.memories.collect { memList ->
-                rtdbManager.syncMemories(memList)
+                val currentUid = getActiveUserId()
+                if (currentUid.isNotBlank() && currentUid != "unauthenticated") {
+                    rtdbManager.syncMemories(memList, currentUid)
+                }
             }
         }
+    }
+
+    private fun getActiveUserId(): String {
+        return authManager.currentFirebaseUser?.uid ?: prefs.getAuthenticatedUserId() ?: "unauthenticated"
     }
 
     fun getSettings(): LlmSettings = _settings.value
 
     fun selectModel(modelName: String, provider: String) {
+        val currentUid = getActiveUserId()
         val exactGguf = LlmSettings.ensureGgufFilename(modelName)
         val updated = _settings.value.copy(modelName = exactGguf, provider = provider)
         _settings.value = updated
-        prefs.saveSettings(updated)
+        prefs.saveSettings(updated, currentUid)
 
         // Write selected model's exact .gguf filename to "/model/request"
-        rtdbManager.requestModelSwitch(exactGguf)
+        rtdbManager.requestModelSwitch(exactGguf, currentUid)
 
         val currentConvId = _currentConversation.value?.id
         if (currentConvId != null) {
@@ -164,7 +201,7 @@ class ChatRepository(private val context: Context) {
                 if (it.id == currentConvId) it.copy(model = exactGguf) else it
             }
             _conversations.value = updatedList
-            prefs.saveConversations(updatedList)
+            prefs.saveConversations(updatedList, currentUid)
             _currentConversation.value = updatedList.find { it.id == currentConvId }
         }
     }
@@ -185,7 +222,6 @@ class ChatRepository(private val context: Context) {
         _userModels.value = updated
         prefs.saveSavedModels(updated)
 
-        // Select and write to /model/request
         selectModel(exactGguf, provider)
         return newOption
     }
@@ -197,19 +233,20 @@ class ChatRepository(private val context: Context) {
     }
 
     fun updateSettings(newSettings: LlmSettings) {
+        val currentUid = getActiveUserId()
         val oldUrl = _settings.value.firebaseUrl
         _settings.value = newSettings
-        prefs.saveSettings(newSettings)
+        prefs.saveSettings(newSettings, currentUid)
 
-        // Publish model change to RTDB
-        rtdbManager.publishActiveModel(
-            newSettings.modelName,
-            newSettings.provider,
-            _currentConversation.value?.id
-        )
-
-        // Sync all settings & button states to Firebase RTDB for backend
-        rtdbManager.syncSettingsToRtdb(newSettings)
+        if (currentUid.isNotBlank() && currentUid != "unauthenticated") {
+            rtdbManager.publishActiveModel(
+                newSettings.modelName,
+                newSettings.provider,
+                _currentConversation.value?.id,
+                currentUid
+            )
+            rtdbManager.syncSettingsToRtdb(newSettings, currentUid)
+        }
 
         if (oldUrl != newSettings.firebaseUrl) {
             rtdbManager.initialize(newSettings.firebaseUrl)
@@ -225,7 +262,7 @@ class ChatRepository(private val context: Context) {
     }
 
     fun updateSliderParameter(paramKey: String, value: Number) {
-        // Update local settings in-memory
+        val currentUid = getActiveUserId()
         val current = _settings.value
         val updated = when (paramKey) {
             "max_tokens" -> current.copy(maxTokens = value.toInt())
@@ -234,16 +271,21 @@ class ChatRepository(private val context: Context) {
             else -> current
         }
         _settings.value = updated
-        prefs.saveSettings(updated)
-        rtdbManager.syncSliderParameter(paramKey, value)
+        prefs.saveSettings(updated, currentUid)
+        if (currentUid.isNotBlank() && currentUid != "unauthenticated") {
+            rtdbManager.syncSliderParameter(paramKey, value, currentUid)
+        }
     }
 
     fun updateSystemInstruction(instruction: String) {
+        val currentUid = getActiveUserId()
         val current = _settings.value
         val updated = current.copy(systemInstruction = instruction)
         _settings.value = updated
-        prefs.saveSettings(updated)
-        rtdbManager.syncSystemInstruction(instruction)
+        prefs.saveSettings(updated, currentUid)
+        if (currentUid.isNotBlank() && currentUid != "unauthenticated") {
+            rtdbManager.syncSystemInstruction(instruction, currentUid)
+        }
     }
 
     fun checkConnection() {
@@ -251,12 +293,15 @@ class ChatRepository(private val context: Context) {
     }
 
     fun selectConversation(conversationId: String) {
-        val conv = _conversations.value.find { it.id == conversationId } ?: return
-        _currentConversation.value = conv
-        prefs.setActiveConversationId(conversationId)
+        val currentUid = getActiveUserId()
+        if (currentUid.isBlank() || currentUid == "unauthenticated") return
 
-        // Load cached messages first
-        val cached = prefs.getMessages(conversationId)
+        val conv = _conversations.value.find { it.id == conversationId && it.userId == currentUid } ?: return
+        _currentConversation.value = conv
+        prefs.setActiveConversationId(conversationId, currentUid)
+
+        // Load cached messages strictly for this user and conversation
+        val cached = prefs.getMessages(conversationId, currentUid)
         _messages.value = cached
 
         // Subscribe to RTDB real-time changes
@@ -264,32 +309,32 @@ class ChatRepository(private val context: Context) {
     }
 
     fun createNewConversation(title: String = "New Chat", model: String = _settings.value.modelName): Conversation {
+        val currentUid = getActiveUserId()
         val newId = UUID.randomUUID().toString().take(12)
-        val currentUserId = prefs.getUserId()
         val newConv = Conversation(
             id = newId,
             title = title,
             createdAt = System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis(),
             model = model,
-            userId = currentUserId
+            userId = currentUid
         )
 
         val updatedList = listOf(newConv) + _conversations.value
         _conversations.value = updatedList
-        prefs.saveConversations(updatedList, currentUserId)
+        prefs.saveConversations(updatedList, currentUid)
 
         selectConversation(newId)
         return newConv
     }
 
     fun renameConversation(conversationId: String, newTitle: String) {
-        val currentUserId = prefs.getUserId()
+        val currentUid = getActiveUserId()
         val updated = _conversations.value.map {
-            if (it.id == conversationId) it.copy(title = newTitle.trim(), updatedAt = System.currentTimeMillis()) else it
+            if (it.id == conversationId && it.userId == currentUid) it.copy(title = newTitle.trim(), updatedAt = System.currentTimeMillis()) else it
         }
         _conversations.value = updated
-        prefs.saveConversations(updated, currentUserId)
+        prefs.saveConversations(updated, currentUid)
 
         if (_currentConversation.value?.id == conversationId) {
             _currentConversation.value = updated.find { it.id == conversationId }
@@ -297,13 +342,13 @@ class ChatRepository(private val context: Context) {
     }
 
     fun deleteConversation(conversationId: String) {
-        val currentUserId = prefs.getUserId()
-        rtdbManager.deleteConversation(conversationId) {}
-        prefs.deleteConversationData(conversationId, currentUserId)
+        val currentUid = getActiveUserId()
+        rtdbManager.deleteConversation(conversationId, currentUid) {}
+        prefs.deleteConversationData(conversationId, currentUid)
 
-        val updated = _conversations.value.filter { it.id != conversationId }
+        val updated = _conversations.value.filter { it.id != conversationId || it.userId != currentUid }
         _conversations.value = updated
-        prefs.saveConversations(updated, currentUserId)
+        prefs.saveConversations(updated, currentUid)
 
         if (_currentConversation.value?.id == conversationId) {
             if (updated.isNotEmpty()) {
@@ -315,8 +360,12 @@ class ChatRepository(private val context: Context) {
     }
 
     private fun subscribeToConversation(conversationId: String) {
+        val currentUid = getActiveUserId()
+        if (currentUid.isBlank() || currentUid == "unauthenticated") return
+
         rtdbManager.listenToConversation(
             conversationId = conversationId,
+            targetUserId = currentUid,
             onMessageReceived = { newMsg ->
                 handleIncomingMessage(newMsg)
             },
@@ -333,6 +382,7 @@ class ChatRepository(private val context: Context) {
 
     private fun handleIncomingMessage(incoming: ChatMessage) {
         scope.launch {
+            val currentUid = getActiveUserId()
             var processedMessage = incoming
 
             if (incoming.isUser) {
@@ -350,7 +400,6 @@ class ChatRepository(private val context: Context) {
                     (incoming.requestId.isNotEmpty() && it.requestId == incoming.requestId && it.isAi)
                 }
 
-                // If user stopped this request, clamp status to completed and never resurrect generating
                 val isStopped = (incoming.requestId.isNotEmpty() && stoppedRequestIds.contains(incoming.requestId)) ||
                         (!isCurrentlyGenerating && incoming.requestId != pendingRequestId && (existingMsg?.status == "completed"))
                 val currentStatus = if (isStopped) "completed" else incoming.status
@@ -362,7 +411,6 @@ class ChatRepository(private val context: Context) {
                 val isHistorical = (incoming.requestId != pendingRequestId && incoming.requestId.isNotEmpty() && existingMsg != null && existingMsg.status == "completed")
 
                 if (isHistorical) {
-                    // Do NOT re-translate historical messages! Keep existing text to prevent screen-opening glitch
                     processedMessage = incoming.copy(
                         text = existingMsg.text.ifBlank { incoming.text },
                         originalText = existingMsg.originalText ?: incoming.originalText,
@@ -386,10 +434,6 @@ class ChatRepository(private val context: Context) {
                         isLatinScript = isLatin
                     )
 
-                    // Real-time streaming:
-                    // During streaming (status != "completed"), stream raw/formatted text directly into UI with 0 latency.
-                    // Do NOT launch asynchronous Google Translate HTTP calls on intermediate streaming tokens.
-                    // When fully completed (currentStatus == "completed"), if translator is ON and needed, translate once cleanly.
                     val finalDisplayText = if (!_settings.value.translatorEnabled) {
                         formatted
                     } else if (TranslatorHelper.isCreatorOrIdentityQuery(rawPrompt, engPrompt)) {
@@ -448,7 +492,7 @@ class ChatRepository(private val context: Context) {
 
             _messages.value = currentList
             _currentConversation.value?.let { conv ->
-                prefs.saveMessages(conv.id, currentList)
+                prefs.saveMessages(conv.id, currentList, currentUid)
             }
 
             if (incoming.isAi && incoming.requestId == pendingRequestId) {
@@ -471,6 +515,9 @@ class ChatRepository(private val context: Context) {
         attachedImageBase64: String? = null,
         forcedAgentMode: Boolean? = null
     ) {
+        val currentUid = getActiveUserId()
+        if (currentUid.isBlank() || currentUid == "unauthenticated") return
+
         val trimmed = text.trim()
         val hasImage = !attachedImageUri.isNullOrEmpty() || !attachedImageBase64.isNullOrEmpty()
         if (trimmed.isEmpty() && !hasImage) return
@@ -479,7 +526,6 @@ class ChatRepository(private val context: Context) {
         val chosenModel = overrideModel ?: conv.model.ifEmpty { _settings.value.modelName }
         val agentModeActive = forcedAgentMode ?: _settings.value.agentModeEnabled
 
-        // Route the request to determine intent and tools
         val routing = RequestRouter.route(
             prompt = trimmed,
             hasImage = hasImage,
@@ -487,14 +533,11 @@ class ChatRepository(private val context: Context) {
             currentModel = chosenModel
         )
 
-        // Generate request and message IDs
         val reqId = UUID.randomUUID().toString()
         val userMsgId = "msg_user_${System.currentTimeMillis()}"
 
-        // Memory context lookup
         val memoryContext = memoryManager.buildContextForPrompt(trimmed, _settings.value.memoryEnabled)
 
-        // Execute local tool if applicable (e.g. calculator or file operation)
         var localToolCall: String? = null
         var localToolResult: String? = null
 
@@ -527,7 +570,6 @@ class ChatRepository(private val context: Context) {
             memoryContext = memoryContext.ifEmpty { null }
         )
 
-        // Auto-title conversation from first prompt
         if (conv.title == "New Chat" || conv.title.isEmpty()) {
             val displayTitle = if (trimmed.length > 28) trimmed.take(28) + "…" else trimmed.ifEmpty { "Image Analysis" }
             renameConversation(conv.id, displayTitle)
@@ -539,7 +581,7 @@ class ChatRepository(private val context: Context) {
         val currentList = _messages.value.toMutableList()
         currentList.add(userMessage)
         _messages.value = currentList
-        prefs.saveMessages(conv.id, currentList)
+        prefs.saveMessages(conv.id, currentList, currentUid)
 
         val aiPlaceholderId = "msg_ai_${System.currentTimeMillis() + 1}"
         val aiPlaceholder = ChatMessage(
@@ -562,8 +604,6 @@ class ChatRepository(private val context: Context) {
         isCurrentlyGeneratingFlow.value = true
 
         scope.launch {
-            // Immediate zero-latency database transmission:
-            // Send user message directly to Firebase RTDB without any blocking HTTP translation call.
             val messageToSend = userMessage.copy(
                 text = trimmed.ifEmpty { "[Image Attachment]" },
                 originalText = trimmed.ifEmpty { "[Image Attachment]" },
@@ -573,6 +613,7 @@ class ChatRepository(private val context: Context) {
 
             rtdbManager.sendMessage(
                 message = messageToSend,
+                targetUserId = currentUid,
                 onSuccess = {
                     updateUserMessageStatus(userMsgId, "sent", null)
 
@@ -580,7 +621,7 @@ class ChatRepository(private val context: Context) {
                     if (listWithAi.none { it.requestId == reqId && it.isAi }) {
                         listWithAi.add(aiPlaceholder)
                         _messages.value = listWithAi
-                        prefs.saveMessages(conv.id, listWithAi)
+                        prefs.saveMessages(conv.id, listWithAi, currentUid)
                     }
 
                     rtdbManager.startResponseTimeout(_settings.value.responseTimeoutSeconds) {
@@ -596,26 +637,8 @@ class ChatRepository(private val context: Context) {
         }
     }
 
-    private fun addErrorMessageToChat(convId: String, text: String, model: String, errorMsg: String) {
-        val userMsgId = "msg_user_${System.currentTimeMillis()}"
-        val errMessage = ChatMessage(
-            messageId = userMsgId,
-            conversationId = convId,
-            sender = "user",
-            text = text,
-            originalText = text,
-            timestamp = System.currentTimeMillis(),
-            status = "error",
-            errorMessage = errorMsg,
-            model = model
-        )
-        val currentList = _messages.value.toMutableList()
-        currentList.add(errMessage)
-        _messages.value = currentList
-        prefs.saveMessages(convId, currentList)
-    }
-
     fun retryMessage(failedMessage: ChatMessage) {
+        val currentUid = getActiveUserId()
         val conv = _currentConversation.value ?: return
 
         updateUserMessageStatus(failedMessage.messageId, "sending", null)
@@ -632,6 +655,7 @@ class ChatRepository(private val context: Context) {
 
         rtdbManager.sendMessage(
             message = updatedMessage,
+            targetUserId = currentUid,
             onSuccess = {
                 updateUserMessageStatus(failedMessage.messageId, "sent", null)
 
@@ -657,7 +681,7 @@ class ChatRepository(private val context: Context) {
                     listWithAi.add(aiPlaceholder)
                 }
                 _messages.value = listWithAi
-                prefs.saveMessages(conv.id, listWithAi)
+                prefs.saveMessages(conv.id, listWithAi, currentUid)
 
                 rtdbManager.startResponseTimeout(_settings.value.responseTimeoutSeconds) {
                     handleAiResponseTimeout(reqId, "msg_ai_${System.currentTimeMillis()}")
@@ -690,6 +714,7 @@ class ChatRepository(private val context: Context) {
         rtdbManager.cancelResponseTimeout()
         val currentConvId = _currentConversation.value?.id ?: ""
         val reqId = pendingRequestId ?: ""
+        val currentUid = getActiveUserId()
 
         if (reqId.isNotEmpty()) {
             stoppedRequestIds.add(reqId)
@@ -697,7 +722,6 @@ class ChatRepository(private val context: Context) {
         isCurrentlyGeneratingFlow.value = false
         pendingRequestId = null
 
-        // Instantly mark all generating AI messages in active conversation as completed
         val currentList = _messages.value.map { msg ->
             if (msg.isAi && (msg.isGenerating || msg.status == "generating")) {
                 val updatedText = if (msg.text.isBlank()) "Generation stopped by user." else msg.text
@@ -708,16 +732,16 @@ class ChatRepository(private val context: Context) {
         }
         _messages.value = currentList
         _currentConversation.value?.let { conv ->
-            prefs.saveMessages(conv.id, currentList)
+            prefs.saveMessages(conv.id, currentList, currentUid)
         }
 
         rtdbManager.setConnectionStatus(ConnectionStatus.CONNECTED)
 
-        // Notify backend in background asynchronously
-        rtdbManager.requestStopGeneration(currentConvId, reqId) { _ -> }
+        rtdbManager.requestStopGeneration(currentConvId, reqId, currentUid) { _ -> }
     }
 
     private fun handleAiResponseTimeout(reqId: String, aiMsgId: String) {
+        val currentUid = getActiveUserId()
         val currentList = _messages.value.toMutableList()
         val aiIdx = currentList.indexOfFirst { (it.requestId == reqId && it.isAi) || it.messageId == aiMsgId }
         val timeoutError = "Server response timed out. The backend did not reply in time. Please check backend connection and retry."
@@ -742,13 +766,14 @@ class ChatRepository(private val context: Context) {
         }
         _messages.value = currentList
         _currentConversation.value?.let { conv ->
-            prefs.saveMessages(conv.id, currentList)
+            prefs.saveMessages(conv.id, currentList, currentUid)
         }
         pendingRequestId = null
         rtdbManager.setConnectionStatus(ConnectionStatus.SERVER_UNAVAILABLE)
     }
 
     private fun updateUserMessageStatus(messageId: String, status: String, errorMessage: String?) {
+        val currentUid = getActiveUserId()
         val currentList = _messages.value.toMutableList()
         val idx = currentList.indexOfFirst { it.messageId == messageId }
         if (idx >= 0) {
@@ -763,12 +788,13 @@ class ChatRepository(private val context: Context) {
             )
             _messages.value = currentList
             _currentConversation.value?.let { conv ->
-                prefs.saveMessages(conv.id, currentList)
+                prefs.saveMessages(conv.id, currentList, currentUid)
             }
         }
     }
 
     private fun updateMessageStatusByRequestId(requestId: String, status: String, errorMessage: String?) {
+        val currentUid = getActiveUserId()
         val currentList = _messages.value.toMutableList()
         val idx = currentList.indexOfFirst { it.requestId == requestId && it.isAi }
         if (idx >= 0) {
@@ -778,33 +804,37 @@ class ChatRepository(private val context: Context) {
             )
             _messages.value = currentList
             _currentConversation.value?.let { conv ->
-                prefs.saveMessages(conv.id, currentList)
+                prefs.saveMessages(conv.id, currentList, currentUid)
             }
         }
     }
 
     fun clearChat() {
+        val currentUid = getActiveUserId()
         val conv = _currentConversation.value ?: return
         _messages.value = emptyList()
-        prefs.deleteConversationData(conv.id)
+        prefs.deleteConversationData(conv.id, currentUid)
     }
 
     // Workspace & Memory Operations
     suspend fun createWorkspaceFile(filename: String, content: String): Result<WorkspaceFile> {
+        val currentUid = getActiveUserId()
         val result = workspaceManager.createOrUpdateFile(filename, content)
-        result.getOrNull()?.let { rtdbManager.syncWorkspaceFile(it) }
+        result.getOrNull()?.let { rtdbManager.syncWorkspaceFile(it, currentUid) }
         return result
     }
 
     suspend fun renameWorkspaceFile(oldFilename: String, newFilename: String): Result<WorkspaceFile> {
+        val currentUid = getActiveUserId()
         val result = workspaceManager.renameFile(oldFilename, newFilename)
-        result.getOrNull()?.let { rtdbManager.syncWorkspaceFile(it) }
+        result.getOrNull()?.let { rtdbManager.syncWorkspaceFile(it, currentUid) }
         return result
     }
 
     suspend fun importWorkspaceFile(filename: String, bytes: ByteArray): Result<WorkspaceFile> {
+        val currentUid = getActiveUserId()
         val result = workspaceManager.importFile(filename, bytes)
-        result.getOrNull()?.let { rtdbManager.syncWorkspaceFile(it) }
+        result.getOrNull()?.let { rtdbManager.syncWorkspaceFile(it, currentUid) }
         return result
     }
 
@@ -820,7 +850,7 @@ class ChatRepository(private val context: Context) {
         return workspaceManager.readFile(filename)
     }
 
-    // Terminal Operations (Real Termux execution + Autonomous backend runner)
+    // Terminal Operations
     fun executeTerminalCommand(
         command: String,
         language: String = "shell",
@@ -829,9 +859,9 @@ class ChatRepository(private val context: Context) {
         onOutput: (stdout: String, stderr: String, exitCode: Int, status: String) -> Unit
     ): String {
         val trimmed = command.trim()
+        val currentUid = getActiveUserId()
         val cmdId = "cmd_" + UUID.randomUUID().toString().take(10)
 
-        // If code is provided for a workspace file, ensure it is written locally first
         if (!filename.isNullOrBlank() && !code.isNullOrBlank()) {
             scope.launch {
                 workspaceManager.createOrUpdateFile(filename, code)
@@ -844,23 +874,20 @@ class ChatRepository(private val context: Context) {
                 trimmed.startsWith("g++ ") || trimmed.startsWith("clang++ ")
 
         if (isExplicitBackendLanguage && isBackendConnected) {
-            // Forward to Autonomous backend
-            return rtdbManager.sendTerminalCommand(command, language, filename, code, onOutput)
+            return rtdbManager.sendTerminalCommand(command, language, filename, code, currentUid, onOutput)
         }
 
-        // Run on local device shell (Termux-compatible native shell runner)
         scope.launch(Dispatchers.IO) {
             val result = nativeTerminal.executeCommand(trimmed) { outLine, errLine ->
                 if (outLine != null) onOutput(outLine, "", 0, "RUNNING")
                 if (errLine != null) onOutput("", errLine, 0, "RUNNING")
             }
 
-            // Check if user tried to run python3/g++ but it's not on Android device shell
             if (result.exitCode == 127 && (trimmed.startsWith("python") || trimmed.startsWith("g++"))) {
                 if (isBackendConnected) {
                     withContext(Dispatchers.Main) {
                         onOutput("", "[Termux notice: python3/g++ not found on local device, redirecting to Autonomous.py backend...]\n", 0, "RUNNING")
-                        rtdbManager.sendTerminalCommand(command, language, filename, code, onOutput)
+                        rtdbManager.sendTerminalCommand(command, language, filename, code, currentUid, onOutput)
                     }
                     return@launch
                 } else {
@@ -875,7 +902,6 @@ class ChatRepository(private val context: Context) {
                 }
             }
 
-            // If the command modified files (e.g. touch, rm, echo > file), refresh workspace
             workspaceManager.refreshFiles()
 
             withContext(Dispatchers.Main) {
@@ -892,8 +918,9 @@ class ChatRepository(private val context: Context) {
     }
 
     fun cancelTerminalCommand(commandId: String) {
+        val currentUid = getActiveUserId()
         nativeTerminal.killActiveProcess()
-        rtdbManager.cancelTerminalCommand(commandId)
+        rtdbManager.cancelTerminalCommand(commandId, currentUid)
     }
 
     fun addMemory(content: String, category: String = "custom"): UserMemory {
@@ -919,61 +946,89 @@ class ChatRepository(private val context: Context) {
     }
 
     fun setCustomUsername(username: String) {
-        prefs.setCustomUsername(username)
-        val resolved = prefs.getDisplayUsername()
+        val currentUid = getActiveUserId()
+        prefs.setCustomUsername(username, currentUid)
+        val resolved = prefs.getDisplayUsername(currentUid)
         _displayUsername.value = resolved
-        val stableId = prefs.getUserId()
-        rtdbManager.syncDisplayUsername(resolved, stableId)
+        if (currentUid.isNotBlank() && currentUid != "unauthenticated") {
+            rtdbManager.syncDisplayUsername(resolved, currentUid)
+        }
     }
 
     // Authenticated User Multi-Device Cloud Data & Chat Restore
     fun restoreUserCloudChats(userId: String, onComplete: (() -> Unit)? = null) {
         val targetUserId = userId.trim()
-        scope.launch {
-            // 1. Restore cloud-stored display username
-            rtdbManager.fetchRemoteUsername(targetUserId) { remoteUsername ->
-                if (!remoteUsername.isNullOrBlank()) {
-                    prefs.setCustomUsername(remoteUsername)
-                    _displayUsername.value = remoteUsername
-                }
-            }
+        if (targetUserId.isBlank() || targetUserId == "unauthenticated") {
+            onComplete?.invoke()
+            return
+        }
 
-            // 2. Restore workspace files from cloud
-            rtdbManager.fetchUserWorkspaceFilesFromRtdb(targetUserId) { cloudFiles ->
-                if (cloudFiles.isNotEmpty()) {
-                    scope.launch {
-                        for (file in cloudFiles) {
-                            workspaceManager.createOrUpdateFile(file.filename, file.content)
+        scope.launch {
+            // Check legacy migration if user previously had username-based node
+            val currentName = prefs.getDisplayUsername(targetUserId)
+            rtdbManager.checkAndMigrateLegacyAccount(targetUserId, currentName) {
+                // 1. Restore cloud-stored display username
+                rtdbManager.fetchRemoteUsername(targetUserId) { remoteUsername ->
+                    if (!remoteUsername.isNullOrBlank()) {
+                        prefs.setCustomUsername(remoteUsername, targetUserId)
+                        _displayUsername.value = remoteUsername
+                    }
+                }
+
+                // 2. Restore remote settings from RTDB
+                rtdbManager.fetchUserSettingsFromRtdb(targetUserId) { remoteSettings ->
+                    if (remoteSettings != null) {
+                        _settings.value = remoteSettings
+                        prefs.saveSettings(remoteSettings, targetUserId)
+                    }
+                }
+
+                // 3. Restore remote memories from RTDB
+                rtdbManager.fetchUserMemoriesFromRtdb(targetUserId) { cloudMemories ->
+                    if (cloudMemories.isNotEmpty()) {
+                        memoryManager.syncFromCloud(targetUserId, cloudMemories)
+                    }
+                }
+
+                // 4. Restore workspace files from cloud
+                rtdbManager.fetchUserWorkspaceFilesFromRtdb(targetUserId) { cloudFiles ->
+                    if (cloudFiles.isNotEmpty()) {
+                        scope.launch {
+                            for (file in cloudFiles) {
+                                workspaceManager.createOrUpdateFile(file.filename, file.content)
+                            }
                         }
                     }
                 }
-            }
 
-            // 3. Restore conversations & messages strictly for this user (Zero cross-user data sharing)
-            rtdbManager.fetchUserConversationsFromRtdb(targetUserId) { cloudConvs, messagesMap ->
-                val existingLocal = prefs.getConversations(targetUserId)
-                    .filter { it.userId == targetUserId }
-                val merged = (cloudConvs + existingLocal)
-                    .map { it.copy(userId = targetUserId) }
-                    .distinctBy { it.id }
-                    .sortedByDescending { it.updatedAt }
+                // 5. Restore conversations & messages strictly for this user (authoritative source of truth)
+                rtdbManager.fetchUserConversationsFromRtdb(targetUserId) { cloudConvs, messagesMap ->
+                    val existingLocal = prefs.getConversations(targetUserId)
+                        .filter { it.userId == targetUserId }
+                    val merged = (cloudConvs + existingLocal)
+                        .map { it.copy(userId = targetUserId) }
+                        .distinctBy { it.id }
+                        .sortedByDescending { it.updatedAt }
 
-                _conversations.value = merged
-                prefs.saveConversations(merged, targetUserId)
+                    _conversations.value = merged
+                    prefs.saveConversations(merged, targetUserId)
 
-                for ((cId, msgs) in messagesMap) {
-                    val localMsgs = prefs.getMessages(cId, targetUserId)
-                    val mergedMsgs = (localMsgs + msgs).distinctBy { it.messageId }.sortedBy { it.timestamp }
-                    prefs.saveMessages(cId, mergedMsgs, targetUserId)
+                    for ((cId, msgs) in messagesMap) {
+                        val localMsgs = prefs.getMessages(cId, targetUserId)
+                        val mergedMsgs = (localMsgs + msgs).distinctBy { it.messageId }.sortedBy { it.timestamp }
+                        prefs.saveMessages(cId, mergedMsgs, targetUserId)
+                    }
+
+                    if (merged.isNotEmpty()) {
+                        val activeId = prefs.getActiveConversationId(targetUserId)
+                        val targetConv = merged.find { it.id == activeId } ?: merged.first()
+                        selectConversation(targetConv.id)
+                    } else {
+                        createNewConversation()
+                    }
+                    Log.d("ChatRepository", "Successfully restored ${cloudConvs.size} cloud conversations for user: $targetUserId")
+                    onComplete?.invoke()
                 }
-
-                if (merged.isNotEmpty()) {
-                    selectConversation(merged.first().id)
-                } else {
-                    createNewConversation()
-                }
-                Log.d("ChatRepository", "Successfully restored ${cloudConvs.size} cloud conversations for user: $targetUserId")
-                onComplete?.invoke()
             }
         }
     }
@@ -989,9 +1044,10 @@ class ChatRepository(private val context: Context) {
         onResult: (Result<com.example.data.model.AuthSession>) -> Unit
     ) {
         scope.launch {
-            // Stop listening to previous conversation & clear in-memory state
+            // Stop previous listeners & clear in-memory state immediately
             rtdbManager.stopListeningToConversation()
-            workspaceManager.clearAllFiles()
+            workspaceManager.clearActiveFiles()
+            memoryManager.clearAllMemories()
             _conversations.value = emptyList()
             _messages.value = emptyList()
             _currentConversation.value = null
@@ -1000,7 +1056,7 @@ class ChatRepository(private val context: Context) {
             result.onSuccess { session ->
                 _displayUsername.value = session.username
                 rtdbManager.syncDisplayUsername(session.username, session.userId)
-                rtdbManager.resetStopFlag()
+                rtdbManager.resetStopFlag(session.userId)
                 restoreUserCloudChats(session.userId)
             }
             onResult(result)
@@ -1021,9 +1077,10 @@ class ChatRepository(private val context: Context) {
         onResult: (Result<com.example.data.model.AuthSession>) -> Unit
     ) {
         scope.launch {
-            // Stop listening to previous conversation & clear in-memory state
+            // Stop previous listeners & clear in-memory state immediately
             rtdbManager.stopListeningToConversation()
-            workspaceManager.clearAllFiles()
+            workspaceManager.clearActiveFiles()
+            memoryManager.clearAllMemories()
             _conversations.value = emptyList()
             _messages.value = emptyList()
             _currentConversation.value = null
@@ -1032,7 +1089,7 @@ class ChatRepository(private val context: Context) {
             result.onSuccess { session ->
                 _displayUsername.value = session.username
                 rtdbManager.syncDisplayUsername(session.username, session.userId)
-                rtdbManager.resetStopFlag()
+                rtdbManager.resetStopFlag(session.userId)
                 restoreUserCloudChats(session.userId)
             }
             onResult(result)
@@ -1045,7 +1102,8 @@ class ChatRepository(private val context: Context) {
     ) {
         scope.launch {
             rtdbManager.stopListeningToConversation()
-            workspaceManager.clearAllFiles()
+            workspaceManager.clearActiveFiles()
+            memoryManager.clearAllMemories()
             _conversations.value = emptyList()
             _messages.value = emptyList()
             _currentConversation.value = null
@@ -1054,7 +1112,7 @@ class ChatRepository(private val context: Context) {
             result.onSuccess { session ->
                 _displayUsername.value = session.username
                 rtdbManager.syncDisplayUsername(session.username, session.userId)
-                rtdbManager.resetStopFlag()
+                rtdbManager.resetStopFlag(session.userId)
                 restoreUserCloudChats(session.userId)
             }
             onResult(result)
@@ -1066,7 +1124,8 @@ class ChatRepository(private val context: Context) {
     ) {
         scope.launch {
             rtdbManager.stopListeningToConversation()
-            workspaceManager.clearAllFiles()
+            workspaceManager.clearActiveFiles()
+            memoryManager.clearAllMemories()
             _conversations.value = emptyList()
             _messages.value = emptyList()
             _currentConversation.value = null
@@ -1075,7 +1134,7 @@ class ChatRepository(private val context: Context) {
             result.onSuccess { session ->
                 _displayUsername.value = session.username
                 rtdbManager.syncDisplayUsername(session.username, session.userId)
-                rtdbManager.resetStopFlag()
+                rtdbManager.resetStopFlag(session.userId)
                 restoreUserCloudChats(session.userId)
             }
             onResult(result)
@@ -1085,14 +1144,19 @@ class ChatRepository(private val context: Context) {
     fun logout(onComplete: () -> Unit = {}) {
         scope.launch {
             rtdbManager.stopListeningToConversation()
-            workspaceManager.clearAllFiles()
-            authManager.logout()
+            rtdbManager.cancelResponseTimeout()
+            workspaceManager.clearActiveFiles()
+            memoryManager.clearAllMemories()
             _conversations.value = emptyList()
             _messages.value = emptyList()
             _currentConversation.value = null
-            _displayUsername.value = prefs.getDisplayUsername()
-            rtdbManager.resetStopFlag()
-            createNewConversation()
+            _displayUsername.value = "User"
+            pendingRequestId = null
+            isCurrentlyGeneratingFlow.value = false
+            stoppedRequestIds.clear()
+
+            authManager.logout()
+            prefs.setActiveConversationId(null)
             onComplete()
         }
     }
