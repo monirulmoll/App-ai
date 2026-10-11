@@ -8,7 +8,7 @@ import sys
 import subprocess
 
 REQUIRED_PACKAGES = [
-    "firebase-admin>=6.4.0",
+    "bcrypt>=4.0.0",
     "requests>=2.31.0",
     "gitpython>=3.1.40",
     "aiohttp>=3.9.0",

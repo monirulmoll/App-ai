@@ -1,17 +1,15 @@
 """
 Autonomous.py — Core Autonomous Agent Engine & Multi-User Termux/Linux Sandbox Runner
-Gemo AI Studio Production Edition
+Gemo AI Studio Production Edition (Single-Root /users/ Architecture)
 Author: Rohit / Gemo AI Architecture Team
 
 Features:
-- Multi-User Isolated Conversation Dispatcher (/users/{userId}/conversations)
-- Legacy Root Conversation Dispatcher (/conversations)
-- Instant Stop Signal Respect & Auto-Reset (/users/{userId}/stop, /stop)
-- Zero-Dependency HTTP engine (standard library urllib.request + fallback requests)
+- Multi-User Isolated Conversation Dispatcher strictly under /users/{userId}/conversations
+- Real-time Terminal Execution Runner strictly under /users/{userId}/agent/terminal/
+- Two-way Workspace File Synchronization strictly under /users/{userId}/workspace/files/
+- Per-User Stop Signal Isolation strictly under /users/{userId}/stop/
+- Zero-Dependency HTTP engine (standard library urllib.request)
 - Intelligent Multi-Domain AI Response Generator (Identity: Rohit, Code Generation, Vision/Image, Math, Chat)
-- Real-time Terminal Execution Runner (/agent/terminal/commands -> /agent/terminal/output)
-- Two-way Workspace File Synchronization (/users/{userId}/workspace/files, /workspace/files)
-- Live Backend Heartbeat (/agent/status) & Authoritative Features (/agent/config/features)
 """
 
 import os
@@ -25,6 +23,10 @@ import subprocess
 import threading
 import urllib.request
 import urllib.error
+import hashlib
+import hmac
+import secrets
+import re
 from typing import Dict, Any, Optional, List
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -87,83 +89,31 @@ class AutonomousAgentEngine:
         return res is not None
 
     # -------------------------------------------------------------
-    # FEATURE MANIFEST & HEARTBEAT
+    # STOP SIGNAL CHECK & RESET (STRICTLY PER-USER)
     # -------------------------------------------------------------
-    def sync_feature_manifest(self):
-        manifest = {
-            "app_building": True,
-            "script_generation": True,
-            "web_search": True,
-            "memory_retrieval": True,
-            "image_understanding": True,
-            "file_understanding": True,
-            "image_generation": True,
-            "file_creation": True,
-            "local_file_imports": True,
-            "github_imports": True,
-            "code_editing": True,
-            "build_and_repair": True
-        }
-        self.rtdb_put("agent/config/features", manifest)
-        logger.info("Published authoritative feature matrix to /agent/config/features")
-
-    def publish_heartbeat(self):
-        status = {
-            "online": True,
-            "last_heartbeat": int(time.time() * 1000),
-            "active_agent_version": "2.5.0-MULTIUSER-PROD",
-            "active_model": "Gemo Autonomous Core",
-            "current_load": 0.02,
-            "sandbox_path": WORKSPACE_DIR
-        }
-        self.rtdb_patch("agent/status", status)
-        self.rtdb_put("online", True)
-
-    def heartbeat_loop(self):
-        while self.is_running:
-            try:
-                self.publish_heartbeat()
-            except Exception as e:
-                logger.debug(f"Heartbeat tick error: {e}")
-            time.sleep(10)
-
-    # -------------------------------------------------------------
-    # STOP SIGNAL CHECK & RESET
-    # -------------------------------------------------------------
-    def is_stopped(self, user_id: Optional[str] = None, conv_id: Optional[str] = None) -> bool:
-        """Checks if stop flag is active for user or globally."""
+    def is_stopped(self, user_id: str, conv_id: Optional[str] = None) -> bool:
+        """Checks if stop flag is active for user."""
         try:
-            # Check user stop flag
-            if user_id:
-                user_stop = self.rtdb_get(f"users/{user_id}/stop")
-                if isinstance(user_stop, dict) and user_stop.get("stop") is True:
-                    return True
-                if user_stop is True:
-                    return True
+            if not user_id:
+                return False
+            user_stop = self.rtdb_get(f"users/{user_id}/stop")
+            if isinstance(user_stop, dict) and user_stop.get("stop") is True:
+                return True
+            if user_stop is True:
+                return True
 
-            # Check conversation stop flag
-            if conv_id and user_id:
+            if conv_id:
                 conv_stop = self.rtdb_get(f"users/{user_id}/conversations/{conv_id}/stop")
                 if isinstance(conv_stop, dict) and conv_stop.get("stop") is True:
                     return True
-
-            # Check root stop flag
-            root_stop = self.rtdb_get("stop")
-            if isinstance(root_stop, dict) and root_stop.get("stop") is True:
-                return True
-            if root_stop is True:
-                return True
-
-            stop_gen = self.rtdb_get("stopGeneration")
-            if stop_gen is True:
-                return True
-
         except Exception as e:
             logger.debug(f"Stop check error: {e}")
         return False
 
-    def reset_stop_flag(self, user_id: Optional[str] = None, conv_id: Optional[str] = None):
-        """Resets stop flags back to false so normal state is maintained."""
+    def reset_stop_flag(self, user_id: str, conv_id: Optional[str] = None):
+        """Resets per-user stop flag back to false."""
+        if not user_id:
+            return
         payload = {
             "stop": False,
             "conversationId": "",
@@ -171,29 +121,26 @@ class AutonomousAgentEngine:
             "timestamp": int(time.time() * 1000)
         }
         try:
-            if user_id:
-                self.rtdb_put(f"users/{user_id}/stop", payload)
-                self.rtdb_put(f"users/{user_id}/stopGeneration", False)
-                if conv_id:
-                    self.rtdb_put(f"users/{user_id}/conversations/{conv_id}/stop", payload)
-            self.rtdb_put("stop", payload)
-            self.rtdb_put("stopGeneration", False)
+            self.rtdb_put(f"users/{user_id}/stop", payload)
+            self.rtdb_put(f"users/{user_id}/stopGeneration", False)
+            if conv_id:
+                self.rtdb_put(f"users/{user_id}/conversations/{conv_id}/stop", payload)
         except Exception as e:
             logger.debug(f"Reset stop flag error: {e}")
 
     # -------------------------------------------------------------
-    # TERMINAL EXECUTION (SANDBOX)
+    # TERMINAL EXECUTION (STRICTLY UNDER /users/{userId}/agent/terminal/)
     # -------------------------------------------------------------
-    def run_terminal_command(self, cmd_id: str, cmd_data: Dict[str, Any], user_id: Optional[str] = None):
+    def run_terminal_command(self, cmd_id: str, cmd_data: Dict[str, Any], user_id: str):
         raw_cmd = cmd_data.get("command", "").strip()
         lang = cmd_data.get("language", "shell").lower()
         filename = cmd_data.get("filename")
         code = cmd_data.get("code")
 
-        cmd_path = f"users/{user_id}/agent/terminal/commands/{cmd_id}" if user_id else f"agent/terminal/commands/{cmd_id}"
-        out_path = f"users/{user_id}/agent/terminal/output/{cmd_id}" if user_id else f"agent/terminal/output/{cmd_id}"
+        cmd_path = f"users/{user_id}/agent/terminal/commands/{cmd_id}"
+        out_path = f"users/{user_id}/agent/terminal/output/{cmd_id}"
 
-        logger.info(f"[Terminal] Processing [{cmd_id}]: {raw_cmd} (lang={lang})")
+        logger.info(f"[Terminal] Processing [{cmd_id}] for user '{user_id}': {raw_cmd} (lang={lang})")
         self.rtdb_patch(cmd_path, {"status": "RUNNING"})
 
         if filename and code:
@@ -202,68 +149,64 @@ class AutonomousAgentEngine:
                 with open(target_path, "w", encoding="utf-8") as f:
                     f.write(code)
             except Exception as e:
-                logger.error(f"[Terminal] File write error: {e}")
+                logger.error(f"Failed to write code file {filename}: {e}")
 
-        exec_cmd = raw_cmd
-        if lang == "python" and not raw_cmd.startswith("python"):
-            exec_cmd = f"python3 {filename or raw_cmd}"
-        elif lang in ("cpp", "c++", "c") and not raw_cmd.startswith("g++"):
-            out_bin = os.path.splitext(filename or "main")[0]
-            exec_cmd = f"g++ -O2 {filename} -o {out_bin} && ./{out_bin}"
+        stdout_text = ""
+        stderr_text = ""
+        exit_code = 0
 
-        stdout_acc, stderr_acc, exit_code = [], [], 0
         try:
-            proc = subprocess.Popen(
-                exec_cmd,
-                shell=True,
-                cwd=WORKSPACE_DIR,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            self.active_processes[cmd_id] = proc
-            out, err = proc.communicate(timeout=60)
-            exit_code = proc.returncode
-            if out: stdout_acc.append(out)
-            if err: stderr_acc.append(err)
+            if lang == "python":
+                if filename and os.path.exists(os.path.join(WORKSPACE_DIR, filename)):
+                    exec_cmd = [sys.executable, os.path.join(WORKSPACE_DIR, filename)]
+                else:
+                    exec_cmd = [sys.executable, "-c", code or raw_cmd]
+                proc = subprocess.Popen(exec_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=WORKSPACE_DIR)
+                stdout_text, stderr_text = proc.communicate(timeout=30)
+                exit_code = proc.returncode
+
+            elif lang in ("c++", "cpp"):
+                cpp_file = filename or "temp.cpp"
+                bin_file = "temp.out"
+                compile_proc = subprocess.run(["g++", "-O2", cpp_file, "-o", bin_file], cwd=WORKSPACE_DIR, capture_output=True, text=True)
+                if compile_proc.returncode != 0:
+                    stdout_text = ""
+                    stderr_text = f"Compilation Error:\n{compile_proc.stderr}"
+                    exit_code = compile_proc.returncode
+                else:
+                    run_proc = subprocess.run([os.path.join(WORKSPACE_DIR, bin_file)], cwd=WORKSPACE_DIR, capture_output=True, text=True, timeout=15)
+                    stdout_text = run_proc.stdout
+                    stderr_text = run_proc.stderr
+                    exit_code = run_proc.returncode
+
+            else:
+                proc = subprocess.Popen(raw_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=WORKSPACE_DIR)
+                stdout_text, stderr_text = proc.communicate(timeout=30)
+                exit_code = proc.returncode
+
         except subprocess.TimeoutExpired:
-            if cmd_id in self.active_processes:
-                self.active_processes[cmd_id].kill()
-            stderr_acc.append("\n[Error: Command timed out after 60s]")
+            stderr_text = "Execution timed out (limit: 30s)"
             exit_code = 124
         except Exception as e:
-            stderr_acc.append(f"\n[Execution error: {str(e)}]")
+            stderr_text = f"Execution failed: {str(e)}"
             exit_code = 1
-        finally:
-            self.active_processes.pop(cmd_id, None)
 
         output_payload = {
             "command_id": cmd_id,
-            "stdout": "".join(stdout_acc),
-            "stderr": "".join(stderr_acc),
+            "stdout": stdout_text,
+            "stderr": stderr_text,
             "exit_code": exit_code,
-            "status": "COMPLETED" if exit_code == 0 else "ERROR",
+            "status": "COMPLETED" if exit_code == 0 else "FAILED",
             "timestamp": int(time.time() * 1000)
         }
 
         self.rtdb_put(out_path, output_payload)
         self.rtdb_patch(cmd_path, {"status": output_payload["status"]})
-        if user_id:
-            # Mirror globally
-            self.rtdb_put(f"agent/terminal/output/{cmd_id}", output_payload)
-            self.rtdb_patch(f"agent/terminal/commands/{cmd_id}", {"status": output_payload["status"]})
+        logger.info(f"[Terminal] Completed [{cmd_id}] for user '{user_id}' with exit code {exit_code}")
 
     def terminal_listener_loop(self):
         while self.is_running:
             try:
-                # Check root commands
-                commands = self.rtdb_get("agent/terminal/commands")
-                if isinstance(commands, dict):
-                    for cmd_id, data in commands.items():
-                        if isinstance(data, dict) and data.get("status") == "PENDING":
-                            threading.Thread(target=self.run_terminal_command, args=(cmd_id, data, None), daemon=True).start()
-
-                # Check multi-user commands
                 users = self.rtdb_get("users")
                 if isinstance(users, dict):
                     for u_id, u_data in users.items():
@@ -278,13 +221,12 @@ class AutonomousAgentEngine:
             time.sleep(0.3)
 
     # -------------------------------------------------------------
-    # CHAT & AUTONOMOUS AI RESPONSE DISPATCHER (MULTI-USER + ROOT)
+    # CHAT & AUTONOMOUS AI RESPONSE DISPATCHER (STRICTLY UNDER /users/)
     # -------------------------------------------------------------
     def chat_listener_loop(self):
-        logger.info("Chat dispatcher actively monitoring conversations across all users...")
+        logger.info("Chat dispatcher actively monitoring conversations across all users under /users/...")
         while self.is_running:
             try:
-                # 1. Process multi-user conversations: /users/{userId}/conversations
                 users = self.rtdb_get("users")
                 if isinstance(users, dict):
                     for user_id, user_data in users.items():
@@ -294,26 +236,17 @@ class AutonomousAgentEngine:
                         if isinstance(convs, dict):
                             for conv_id, conv_data in convs.items():
                                 self._scan_and_reply_conversation(conv_id, conv_data, user_id=user_id)
-
-                # 2. Process root conversations: /conversations
-                root_convs = self.rtdb_get("conversations")
-                if isinstance(root_convs, dict):
-                    for conv_id, conv_data in root_convs.items():
-                        user_id = conv_data.get("userId") if isinstance(conv_data, dict) else None
-                        self._scan_and_reply_conversation(conv_id, conv_data, user_id=user_id)
-
             except Exception as e:
                 logger.debug(f"Chat listener tick error: {e}")
             time.sleep(0.4)
 
-    def _scan_and_reply_conversation(self, conv_id: str, conv_data: Any, user_id: Optional[str] = None):
+    def _scan_and_reply_conversation(self, conv_id: str, conv_data: Any, user_id: str):
         if not isinstance(conv_data, dict):
             return
         messages = conv_data.get("messages")
         if not isinstance(messages, dict):
             return
 
-        # Check all existing message IDs and request IDs
         all_req_ids_answered = set()
         for m_id, m in messages.items():
             if isinstance(m, dict) and m.get("sender") == "ai":
@@ -321,7 +254,6 @@ class AutonomousAgentEngine:
                 if req_id:
                     all_req_ids_answered.add(req_id)
 
-        # Find unanswered user message
         for msg_id, msg in messages.items():
             if not isinstance(msg, dict):
                 continue
@@ -330,7 +262,6 @@ class AutonomousAgentEngine:
             req_id = msg.get("requestId") or msg_id
 
             if sender == "user" and req_id not in all_req_ids_answered and req_id not in self.processed_user_requests:
-                # We found an unanswered user message!
                 prompt = msg.get("text") or msg.get("originalText") or conv_data.get("lastPrompt", "")
                 has_image = bool(msg.get("imageBase64") or msg.get("hasImage"))
                 image_base64 = msg.get("imageBase64")
@@ -342,7 +273,8 @@ class AutonomousAgentEngine:
                     prompt=prompt,
                     has_image=has_image,
                     image_base64=image_base64,
-                    user_id=user_id
+                    user_id=user_id,
+                    msg_data=msg
                 )
 
     def process_incoming_user_message(
@@ -353,31 +285,34 @@ class AutonomousAgentEngine:
         prompt: str,
         has_image: bool = False,
         image_base64: Optional[str] = None,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        msg_data: Optional[Dict[str, Any]] = None
     ):
-        logger.info(f"[Agent] New prompt from user [{user_id or 'global'}]: '{prompt}' (req={req_id})")
+        verified_user_id = (user_id or "").strip()
+        if not verified_user_id:
+            logger.warning(f"[Agent] Incoming message {user_msg_id} in {conv_id} has no user_id! Skipping to prevent cross-user data leakage.")
+            return
+        logger.info(f"[Agent] Prompt from user '{verified_user_id}': '{prompt}' (req={req_id})")
 
         # 1. Check if user pressed STOP
-        if self.is_stopped(user_id=user_id, conv_id=conv_id):
+        if self.is_stopped(user_id=verified_user_id, conv_id=conv_id):
             logger.info(f"[Agent] Stop signal is active for req [{req_id}]. Aborting generation.")
-            self.reset_stop_flag(user_id=user_id, conv_id=conv_id)
+            self.reset_stop_flag(user_id=verified_user_id, conv_id=conv_id)
             return
 
-        # 2. Mark user message as generating or processing
-        if user_id:
-            self.rtdb_patch(f"users/{user_id}/conversations/{conv_id}/messages/{user_msg_id}", {"status": "generating"})
-        self.rtdb_patch(f"conversations/{conv_id}/messages/{user_msg_id}", {"status": "generating"})
+        # 2. Mark user message as generating
+        self.rtdb_patch(f"users/{verified_user_id}/conversations/{conv_id}/messages/{user_msg_id}", {"status": "generating"})
 
         # 3. Generate response using autonomous intelligence
         reply_text, files_created = self.generate_intelligent_response(prompt, has_image, image_base64)
 
-        # 4. Check stop again before saving (in case user clicked stop while generating)
-        if self.is_stopped(user_id=user_id, conv_id=conv_id):
+        # 4. Check stop again before saving
+        if self.is_stopped(user_id=verified_user_id, conv_id=conv_id):
             logger.info(f"[Agent] Stop requested during generation for req [{req_id}].")
-            self.reset_stop_flag(user_id=user_id, conv_id=conv_id)
+            self.reset_stop_flag(user_id=verified_user_id, conv_id=conv_id)
             return
 
-        # 5. Sync any generated files to local workspace and to RTDB
+        # 5. Sync generated files to sandbox and user workspace
         for fname, content in files_created.items():
             local_f = os.path.join(WORKSPACE_DIR, fname)
             with open(local_f, "w", encoding="utf-8") as f:
@@ -389,11 +324,9 @@ class AutonomousAgentEngine:
                 "sizeBytes": len(content.encode("utf-8")),
                 "lastModified": int(time.time() * 1000)
             }
-            if user_id:
-                self.rtdb_put(f"users/{user_id}/workspace/files/{sanitized}", f_payload)
-            self.rtdb_put(f"workspace/files/{sanitized}", f_payload)
+            self.rtdb_put(f"users/{verified_user_id}/workspace/files/{sanitized}", f_payload)
 
-        # 6. Create AI response message
+        # 6. Create canonical AI response message
         ai_msg_id = f"ai_{uuid.uuid4().hex[:10]}"
         now = int(time.time() * 1000)
         ai_message = {
@@ -401,6 +334,7 @@ class AutonomousAgentEngine:
             "conversationId": conv_id,
             "requestId": req_id,
             "sender": "ai",
+            "userId": verified_user_id,
             "text": reply_text,
             "status": "completed",
             "model": "Qwen 2.5 1.5B Instruct",
@@ -409,25 +343,18 @@ class AutonomousAgentEngine:
             "generatedFiles": list(files_created.keys())
         }
 
-        # 7. Write AI message to user's isolated path and root path
-        if user_id:
-            self.rtdb_put(f"users/{user_id}/conversations/{conv_id}/messages/{ai_msg_id}", ai_message)
-            self.rtdb_patch(f"users/{user_id}/conversations/{conv_id}/messages/{user_msg_id}", {"status": "completed"})
-            self.rtdb_patch(f"users/{user_id}/conversations/{conv_id}", {
-                "lastMessage": reply_text[:60],
-                "updatedAt": now
-            })
-
-        self.rtdb_put(f"conversations/{conv_id}/messages/{ai_msg_id}", ai_message)
-        self.rtdb_patch(f"conversations/{conv_id}/messages/{user_msg_id}", {"status": "completed"})
-        self.rtdb_patch(f"conversations/{conv_id}", {
+        # 7. Write AI message strictly under user's isolated path (/users/{userId}/conversations/{convId}/messages)
+        self.rtdb_put(f"users/{verified_user_id}/conversations/{conv_id}/messages/{ai_msg_id}", ai_message)
+        self.rtdb_patch(f"users/{verified_user_id}/conversations/{conv_id}/messages/{user_msg_id}", {"status": "completed"})
+        self.rtdb_patch(f"users/{verified_user_id}/conversations/{conv_id}", {
+            "title": prompt[:30],
             "lastMessage": reply_text[:60],
-            "updatedAt": now
+            "updatedAt": now,
+            "userId": verified_user_id
         })
 
-        # Ensure stop flag is reset to false
-        self.reset_stop_flag(user_id=user_id, conv_id=conv_id)
-        logger.info(f"[Agent] Successfully generated and posted response for req [{req_id}].")
+        self.reset_stop_flag(user_id=verified_user_id, conv_id=conv_id)
+        logger.info(f"[Agent] Successfully generated and posted response for user '{verified_user_id}' req [{req_id}].")
 
     # -------------------------------------------------------------
     # AUTONOMOUS INTELLIGENCE ENGINE (Natural Language, Code, Vision)
@@ -454,7 +381,7 @@ class AutonomousAgentEngine:
         if has_image or image_base64:
             reply = (
                 "### 📷 Image Received & Analyzed\n\n"
-                "Maine aapki bheji hui photo (Base64 encoded data) successfully receive kar li hai! "
+                "Maine aapki bheji hui photo successfully receive kar li hai! "
                 "Main is image ko analyze kar sakta hoon. Aap is image ke baare me kya poochna ya generate karna chahte hain?"
             )
             return reply, files
@@ -493,42 +420,23 @@ class AutonomousAgentEngine:
                 "    elif op == '/': return a / b if b != 0 else 'Error: Div by zero'\n"
                 "    return 'Invalid operator'\n\n"
                 "if __name__ == '__main__':\n"
-                "    print('5 + 3 =', calculate(5, 3, '+'))\n"
-                "    print('10 - 4 =', calculate(10, 4, '-'))\n"
-                "    print('6 * 7 =', calculate(6, 7, '*'))\n"
+                "    print('Calculator by Rohit (Gemo AI):')\n"
+                "    print('10 + 5 =', calculate(10, 5, '+'))\n"
+                "    print('10 * 5 =', calculate(10, 5, '*'))\n"
             )
             files["calculator.py"] = calc_code
             reply = (
-                "### 🧮 Calculator Script Generated!\n\n"
+                "### 🧮 Calculator Script Created!\n\n"
+                "Maine aapke liye Calculator script generate kar di hai:\n\n"
                 "```python:calculator.py\n" + calc_code + "```\n\n"
-                "Script save ho gaya hai aapke workspace me!"
+                "File `calculator.py` aapke workspace me save ho gayi hai."
             )
             return reply, files
 
-        # 5. Code / Script requests
-        if any(k in p for k in ["python", "code", "script", "function", "program", "app", "banao", "create", "make"]):
-            script = (
-                f"# Autonomous Script for: {prompt}\n"
-                "# Creator: Rohit | Gemo AI Core\n\n"
-                "def run():\n"
-                f"    print('Executing task: {prompt}')\n"
-                "    print('Status: Successfully executed!')\n\n"
-                "if __name__ == '__main__':\n"
-                "    run()\n"
-            )
-            files["app.py"] = script
-            reply = (
-                f"### ⚡ Task Created: {prompt}\n\n"
-                "Maine aapke liye script generate kar di hai:\n\n"
-                "```python:app.py\n" + script + "```\n\n"
-                "Aap is file ko **Code Workspace** me dekh sakte hain aur Terminal se execute kar sakte hain."
-            )
-            return reply, files
-
-        # 6. General Intelligent Conversations / Q&A
+        # 5. General greetings
         general_answers = {
-            "hi": "Hello! Main Gemo AI hoon, jise Rohit ne banaya hai. Main aapki kya madad kar sakta hoon?",
-            "hello": "Hi there! I am Gemo AI, created by Rohit. How can I help you today?",
+            "hi": "Hello! Main Gemo AI hoon jise Rohit ne banaya hai. Main aapki kya madad kar sakta hoon?",
+            "hello": "Hello! How can I assist you with coding, building apps, or reasoning today?",
             "kaise ho": "Main bilkul badhiya hoon! Aap bataiye, aaj kya create karna hai?",
             "how are you": "I'm doing great and ready to build! What would you like to work on?",
         }
@@ -546,44 +454,23 @@ class AutonomousAgentEngine:
         return reply, files
 
     # -------------------------------------------------------------
-    # MODEL SWITCH & SETTINGS LISTENER
-    # -------------------------------------------------------------
-    def settings_and_model_listener_loop(self):
-        last_req_model = None
-        while self.is_running:
-            try:
-                req_model = self.rtdb_get("model/request")
-                if req_model and req_model != last_req_model:
-                    last_req_model = req_model
-                    self.rtdb_put("model", req_model)
-                    self.rtdb_patch("agent/status", {"active_model": req_model})
-                    logger.info(f"[Model Switch] Switched active model to: {req_model}")
-            except Exception as e:
-                logger.debug(f"Settings listener error: {e}")
-            time.sleep(1.0)
-
-    # -------------------------------------------------------------
     # MAIN ENGINE START
     # -------------------------------------------------------------
     def start(self):
         logger.info("====================================================")
         logger.info("   GEMO AI AUTONOMOUS MULTI-USER ENGINE STARTED     ")
+        logger.info("   Single-Root /users/ Architecture                 ")
         logger.info("   Creator: Rohit                                   ")
         logger.info("====================================================")
-        self.sync_feature_manifest()
-        self.publish_heartbeat()
-        self.reset_stop_flag()
 
         threads = [
-            threading.Thread(target=self.heartbeat_loop, daemon=True),
             threading.Thread(target=self.terminal_listener_loop, daemon=True),
-            threading.Thread(target=self.chat_listener_loop, daemon=True),
-            threading.Thread(target=self.settings_and_model_listener_loop, daemon=True)
+            threading.Thread(target=self.chat_listener_loop, daemon=True)
         ]
         for t in threads:
             t.start()
 
-        logger.info(f"Ready! Autonomous Engine actively serving RTDB: {self.firebase_url}")
+        logger.info(f"Ready! Autonomous Engine actively monitoring: {self.firebase_url}/users/")
         try:
             while self.is_running:
                 time.sleep(1)

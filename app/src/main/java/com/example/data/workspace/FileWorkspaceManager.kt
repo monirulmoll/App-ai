@@ -210,4 +210,17 @@ class FileWorkspaceManager(private val context: Context) {
             it.filename.lowercase().contains(q) || it.content.lowercase().contains(q)
         }
     }
+
+    /**
+     * Clears all workspace files from disk and memory when switching or logging out accounts.
+     * Prevents cross-user workspace file leaks.
+     */
+    fun clearAllFiles() {
+        try {
+            workspaceDir.listFiles()?.forEach { file ->
+                if (file.isFile) file.delete()
+            }
+            refreshFiles()
+        } catch (_: Exception) {}
+    }
 }

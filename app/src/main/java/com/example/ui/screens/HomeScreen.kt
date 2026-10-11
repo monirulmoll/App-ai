@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Search
@@ -82,6 +83,8 @@ private data class QuickAction(
 fun HomeScreen(
     conversations: List<Conversation>,
     activeModelName: String = "",
+    displayUsername: String = "User",
+    userProfile: Any? = null,
     onNavigate: (AppScreen) -> Unit,
     onSelectConversation: (String) -> Unit,
     onQuickPrompt: (String) -> Unit,
@@ -152,19 +155,28 @@ fun HomeScreen(
                                 style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                             )
                             Text(
-                                text = "Hello, Creator! By Rohit",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = "Hello, $displayUsername!",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                color = GeminiCyan
                             )
                         }
                     }
 
-                    IconButton(onClick = { onNavigate(AppScreen.SETTINGS) }) {
-                        Icon(
-                            imageVector = Icons.Default.Settings,
-                            contentDescription = "Settings",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { onNavigate(AppScreen.BACKEND_STATUS) }) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = "Performance & Backend",
+                                tint = GeminiCyan
+                            )
+                        }
+                        IconButton(onClick = { onNavigate(AppScreen.SETTINGS) }) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "Settings",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }

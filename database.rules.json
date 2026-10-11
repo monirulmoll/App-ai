@@ -1,0 +1,67 @@
+{
+  "rules": {
+    "users": {
+      "$username": {
+        ".read": true,
+        ".write": true,
+        "profile": {
+          ".validate": "newData.hasChildren(['username'])"
+        },
+        "auth": {
+          "passwordHash": {
+            ".validate": "newData.isString()"
+          }
+        },
+        "conversations": {
+          "$conversationId": {
+            ".indexOn": ["updatedAt", "createdAt"],
+            "messages": {
+              "$messageId": {
+                ".indexOn": ["timestamp", "status", "requestId"]
+              }
+            }
+          }
+        },
+        "workspace": {
+          "files": {
+            "$fileId": {
+              ".validate": "newData.hasChildren(['filename', 'content'])"
+            }
+          }
+        },
+        "memory": {
+          ".read": true,
+          ".write": true
+        },
+        "settings": {
+          ".read": true,
+          ".write": true
+        },
+        "agent": {
+          "terminal": {
+            "commands": {
+              "$commandId": {
+                ".read": true,
+                ".write": true
+              }
+            },
+            "output": {
+              "$commandId": {
+                ".read": true,
+                ".write": true
+              }
+            }
+          }
+        },
+        "stop": {
+          ".read": true,
+          ".write": true
+        },
+        "stopGeneration": {
+          ".read": true,
+          ".write": true
+        }
+      }
+    }
+  }
+}

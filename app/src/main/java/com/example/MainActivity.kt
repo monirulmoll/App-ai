@@ -43,6 +43,8 @@ class MainActivity : ComponentActivity() {
             val viewModel: ChatViewModel = viewModel()
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
             val currentScreen by viewModel.currentScreen.collectAsStateWithLifecycle()
+            val displayUsername by viewModel.displayUsername.collectAsStateWithLifecycle()
+            val userProfile by viewModel.currentUserProfile.collectAsStateWithLifecycle()
 
             val isDarkTheme = when (uiState.settings.themeMode) {
                 "DARK" -> true
@@ -67,6 +69,18 @@ class MainActivity : ComponentActivity() {
                                     onGetStarted = { viewModel.startFromSplash() }
                                 )
                             }
+                            AppScreen.LOGIN -> {
+                                com.example.ui.screens.AuthScreen(
+                                    viewModel = viewModel,
+                                    initialTab = 0
+                                )
+                            }
+                            AppScreen.REGISTER -> {
+                                com.example.ui.screens.AuthScreen(
+                                    viewModel = viewModel,
+                                    initialTab = 1
+                                )
+                            }
                             AppScreen.ONBOARDING -> {
                                 OnboardingScreen(
                                     onFinishOnboarding = { viewModel.finishOnboarding() }
@@ -76,6 +90,8 @@ class MainActivity : ComponentActivity() {
                                 HomeScreen(
                                     conversations = uiState.conversations,
                                     activeModelName = activeModelName,
+                                    displayUsername = displayUsername,
+                                    userProfile = userProfile,
                                     onNavigate = { target -> viewModel.navigateTo(target) },
                                     onSelectConversation = { convId ->
                                         viewModel.selectConversation(convId)
@@ -235,6 +251,14 @@ class MainActivity : ComponentActivity() {
                                 SettingsScreen(
                                     currentSettings = uiState.settings,
                                     connectionStatus = uiState.connectionStatus,
+                                    displayUsername = displayUsername,
+                                    userProfile = userProfile,
+                                    onLogout = {
+                                        viewModel.logout()
+                                    },
+                                    onUpdateUsername = { newName ->
+                                        viewModel.setCustomUsername(newName)
+                                    },
                                     onSaveSettings = { newSettings ->
                                         viewModel.updateSettings(newSettings)
                                     },
@@ -256,7 +280,27 @@ class MainActivity : ComponentActivity() {
                                     firebaseUrl = uiState.settings.firebaseUrl,
                                     activeModel = activeModelName,
                                     connectionStatus = uiState.connectionStatus,
+                                    displayUsername = displayUsername,
+                                    userProfile = userProfile,
+                                    internalUserId = viewModel.getStableInternalUserId(),
                                     onTestPing = { viewModel.checkConnection() },
+                                    onSignInGoogle = {
+                                        viewModel.signInWithGoogle(this@MainActivity) { res ->
+                                            if (res.isFailure) {
+                                                android.widget.Toast.makeText(
+                                                    this@MainActivity,
+                                                    res.exceptionOrNull()?.message ?: "Google Sign-In failed",
+                                                    android.widget.Toast.LENGTH_LONG
+                                                ).show()
+                                            }
+                                        }
+                                    },
+                                    onSignOutGoogle = {
+                                        viewModel.signOutGoogle()
+                                    },
+                                    onUpdateUsername = { newName ->
+                                        viewModel.setCustomUsername(newName)
+                                    },
                                     onNavigate = { target -> viewModel.navigateTo(target) },
                                     onBack = { viewModel.navigateBack() }
                                 )
@@ -265,6 +309,8 @@ class MainActivity : ComponentActivity() {
                                 HomeScreen(
                                     conversations = uiState.conversations,
                                     activeModelName = activeModelName,
+                                    displayUsername = displayUsername,
+                                    userProfile = userProfile,
                                     onNavigate = { target -> viewModel.navigateTo(target) },
                                     onSelectConversation = { convId ->
                                         viewModel.selectConversation(convId)

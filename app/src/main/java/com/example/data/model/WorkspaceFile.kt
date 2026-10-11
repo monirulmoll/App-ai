@@ -33,4 +33,14 @@ data class WorkspaceFile(
         "language" to language,
         "content" to content
     )
+
+    companion object {
+        fun fromMap(map: Map<String, Any?>): WorkspaceFile = WorkspaceFile(
+            filename = (map["filename"] as? String) ?: "file.txt",
+            extension = (map["extension"] as? String) ?: "txt",
+            sizeBytes = (map["sizeBytes"] as? Number)?.toLong() ?: 0L,
+            lastModified = (map["lastModified"] as? Number)?.toLong() ?: System.currentTimeMillis(),
+            content = (map["content"] as? String) ?: ""
+        )
+    }
 }

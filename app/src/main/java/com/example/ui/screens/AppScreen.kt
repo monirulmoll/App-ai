@@ -2,6 +2,8 @@ package com.example.ui.screens
 
 enum class AppScreen(val title: String, val route: String) {
     SPLASH("Splash", "splash"),
+    LOGIN("Sign In", "login"),
+    REGISTER("Create Account", "register"),
     ONBOARDING("Onboarding", "onboarding"),
     HOME("Home Dashboard", "home"),
     CHAT("AI Chat", "chat"),

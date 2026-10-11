@@ -21,7 +21,8 @@ data class ChatMessage(
     val agentMode: Boolean = false,
     val intent: String? = null,
     val memoryContext: String? = null,
-    val generatedFiles: List<String> = emptyList()
+    val generatedFiles: List<String> = emptyList(),
+    val userId: String? = null
 ) {
     val isUser: Boolean get() = sender.equals("user", ignoreCase = true)
     val isAi: Boolean get() = !isUser
@@ -75,6 +76,9 @@ data class ChatMessage(
         if (generatedFiles.isNotEmpty()) {
             map["generatedFiles"] = generatedFiles
         }
+        if (!userId.isNullOrBlank()) {
+            map["userId"] = userId
+        }
         return map
     }
 
@@ -100,7 +104,8 @@ data class ChatMessage(
                 agentMode = (map["agentMode"] as? Boolean) ?: false,
                 intent = map["intent"] as? String,
                 memoryContext = map["memoryContext"] as? String,
-                generatedFiles = (map["generatedFiles"] as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+                generatedFiles = (map["generatedFiles"] as? List<*>)?.filterIsInstance<String>() ?: emptyList(),
+                userId = map["userId"] as? String
             )
         }
     }

@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LightMode
@@ -70,6 +71,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -93,10 +95,64 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onSliderChange: (String, Number) -> Unit = { _, _ -> },
     onSystemInstructionChange: (String) -> Unit = {},
+    displayUsername: String = "User",
+    userProfile: Any? = null,
+    onLogout: (() -> Unit)? = null,
+    onSignIn: (() -> Unit)? = null,
+    onSignInGoogle: (() -> Unit)? = null,
+    onSignOutGoogle: (() -> Unit)? = null,
+    onUpdateUsername: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     BackHandler { onBack() }
     val context = LocalContext.current
+    var showEditUsernameDialog by remember { mutableStateOf(false) }
+    var newUsernameInput by remember { mutableStateOf(displayUsername) }
+
+    if (showEditUsernameDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showEditUsernameDialog = false },
+            title = { Text("Choose Gemo AI Username", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        "Enter your custom display username. This will be shown on the performance screen and in chats.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = newUsernameInput,
+                        onValueChange = { newUsernameInput = it },
+                        label = { Text("Username") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val clean = newUsernameInput.trim()
+                        if (clean.isNotBlank()) {
+                            onUpdateUsername?.invoke(clean)
+                            Toast.makeText(context, "Username saved: $clean", Toast.LENGTH_SHORT).show()
+                            showEditUsernameDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditUsernameDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     var firebaseUrl by remember { mutableStateOf(currentSettings.firebaseUrl) }
     var provider by remember { mutableStateOf(currentSettings.provider) }
@@ -215,42 +271,103 @@ fun SettingsScreen(
 
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // Multi-User Device ID display
+                        // Google Account & Display Username Section
                         val currentUserId = remember { com.example.data.local.LocalChatPreferences(context).getUserId() }
                         val clipboardManager = LocalClipboardManager.current
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
                             ),
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(10.dp)
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Gemo Account",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = displayUsername,
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                    val signOutAction = onLogout ?: onSignOutGoogle
+                                    if (signOutAction != null) {
+                                        OutlinedButton(
+                                            onClick = signOutAction,
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = ButtonDefaults.outlinedButtonColors(
+                                                contentColor = MaterialTheme.colorScheme.error
+                                            )
+                                        ) {
+                                            Text("Sign Out", fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                // Display Username Row (dynamically bound to active authenticated username)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = "Display Username",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = displayUsername,
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = GeminiCyan
+                                        )
+                                    }
+                                    TextButton(
+                                        onClick = {
+                                            newUsernameInput = displayUsername
+                                            showEditUsernameDialog = true
+                                        }
+                                    ) {
+                                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Change", fontSize = 12.sp)
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                // User Account ID (Exact Username from account creation)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     Text(
-                                        text = "Multi-User Isolated Device ID",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Text(
-                                        text = currentUserId,
-                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                        text = "User ID: $currentUserId",
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
                                         color = GeminiCyan
                                     )
-                                }
-                                TextButton(
-                                    onClick = {
-                                        clipboardManager.setText(AnnotatedString(currentUserId))
-                                        Toast.makeText(context, "User ID Copied: $currentUserId", Toast.LENGTH_SHORT).show()
+                                    TextButton(
+                                        onClick = {
+                                            clipboardManager.setText(AnnotatedString(currentUserId))
+                                            Toast.makeText(context, "Copied ID", Toast.LENGTH_SHORT).show()
+                                        }
+                                    ) {
+                                        Text("Copy", fontSize = 11.sp)
                                     }
-                                ) {
-                                    Text("Copy", fontSize = 12.sp)
                                 }
                             }
                         }

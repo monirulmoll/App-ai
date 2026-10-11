@@ -80,6 +80,17 @@ class ChatMessageUnitTest {
     }
 
     @Test
+    fun testConversationUserIdMatchesUsername() {
+        val conv = Conversation(id = "conv_1", title = "My Chat", userId = "ussr_error_404")
+        assertEquals("ussr_error_404", conv.userId)
+        val map = conv.toFirebaseMap()
+        assertEquals("ussr_error_404", map["userId"])
+
+        val parsed = Conversation.fromMap("conv_1", map)
+        assertEquals("ussr_error_404", parsed.userId)
+    }
+
+    @Test
     fun testCreatorQueryDetection() {
         assertTrue(TranslatorHelper.isCreatorOrIdentityQuery("tumhe kisne banaya", "who made you"))
         assertTrue(TranslatorHelper.isCreatorOrIdentityQuery("kisne banaya tumhe", "who created you"))
@@ -328,5 +339,55 @@ class ChatMessageUnitTest {
         val result = TranslatorHelper.translateToEnglish("hu")
         assertEquals("hi", result.detectedLanguage)
         assertTrue(result.isLatinScript)
+    }
+
+    @Test
+    fun testUserProfileCanonicalNormalization() {
+        val profile = com.example.data.model.UserProfile(
+            userId = "user_12345",
+            username = "Ussr_Error_404"
+        )
+        assertEquals("ussr_error_404", profile.canonicalUsername)
+        assertTrue(profile.isAvailable)
+
+        val publicMap = profile.toPublicMap()
+        assertEquals("Ussr_Error_404", publicMap["username"])
+        assertTrue(publicMap.containsKey("createdAt"))
+        assertFalse(publicMap.containsKey("sessionToken"))
+    }
+
+    @Test
+    fun testUserProfileFromMapWithFallback() {
+        val map = mapOf<String, Any?>(
+            "username" to "ussr_error_404",
+            "createdAt" to 1791618838272L
+        )
+        val profile = com.example.data.model.UserProfile.fromMap(map, fallbackUserId = "user_27c42e3f36173e9d579a350fe438081a")
+        assertEquals("user_27c42e3f36173e9d579a350fe438081a", profile.userId)
+        assertEquals("ussr_error_404", profile.username)
+        assertEquals("ussr_error_404", profile.canonicalUsername)
+    }
+
+    @Test
+    fun testAuthSessionNotExpired() {
+        val session = com.example.data.model.AuthSession(
+            sessionToken = "token_xyz",
+            userId = "user_987",
+            username = "ussr_error_404",
+            expiresAt = System.currentTimeMillis() + 100000L
+        )
+        assertFalse(session.isExpired)
+        assertEquals("ussr_error_404", session.username)
+    }
+
+    @Test
+    fun testAuthSessionExpired() {
+        val expiredSession = com.example.data.model.AuthSession(
+            sessionToken = "token_expired",
+            userId = "user_987",
+            username = "ussr_error_404",
+            expiresAt = System.currentTimeMillis() - 5000L
+        )
+        assertTrue(expiredSession.isExpired)
     }
 }

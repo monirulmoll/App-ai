@@ -84,7 +84,48 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentScreen = MutableStateFlow(AppScreen.SPLASH)
     val currentScreen: StateFlow<AppScreen> = _currentScreen
 
-    val currentUserProfile: StateFlow<com.example.data.model.GoogleUserProfile?> = repository.currentUserProfile
+    val currentUserProfile: StateFlow<com.example.data.model.UserProfile?> = repository.currentUserProfile
+    val displayUsername: StateFlow<String> = repository.displayUsername
+    val isUserLoggedIn: Boolean get() = repository.isUserLoggedIn
+
+    fun setCustomUsername(username: String) {
+        repository.setCustomUsername(username)
+    }
+
+    fun getStableInternalUserId(): String = com.example.data.local.LocalChatPreferences(getApplication()).getUserId()
+
+    fun login(
+        username: String,
+        password: String,
+        onResult: (Result<com.example.data.model.AuthSession>) -> Unit
+    ) {
+        repository.login(username, password) { result ->
+            if (result.isSuccess) {
+                _currentScreen.value = AppScreen.HOME
+            }
+            onResult(result)
+        }
+    }
+
+    fun register(
+        username: String,
+        password: String,
+        onResult: (Result<com.example.data.model.AuthSession>) -> Unit
+    ) {
+        repository.register(username, password) { result ->
+            if (result.isSuccess) {
+                _currentScreen.value = AppScreen.HOME
+            }
+            onResult(result)
+        }
+    }
+
+    fun logout(onComplete: () -> Unit = {}) {
+        repository.logout {
+            _currentScreen.value = AppScreen.LOGIN
+            onComplete()
+        }
+    }
 
     fun signInWithGoogle(
         activity: androidx.activity.ComponentActivity,
@@ -95,12 +136,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun signOutGoogle(onComplete: () -> Unit = {}) {
-        repository.signOutGoogle(onComplete)
+        logout(onComplete)
     }
 
     fun isOnboardingCompleted(): Boolean = repository.isOnboardingCompleted()
 
     fun navigateTo(screen: AppScreen) {
+        if (!repository.isUserLoggedIn &&
+            screen != AppScreen.LOGIN &&
+            screen != AppScreen.REGISTER &&
+            screen != AppScreen.SPLASH &&
+            screen != AppScreen.ONBOARDING
+        ) {
+            _currentScreen.value = AppScreen.LOGIN
+            return
+        }
         _currentScreen.value = screen
     }
 
@@ -112,7 +162,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             AppScreen.SETTINGS, AppScreen.BACKEND_STATUS -> {
                 _currentScreen.value = AppScreen.HOME
             }
-            AppScreen.ONBOARDING -> {
+            AppScreen.ONBOARDING, AppScreen.REGISTER -> {
+                _currentScreen.value = AppScreen.LOGIN
+            }
+            AppScreen.LOGIN -> {
                 _currentScreen.value = AppScreen.SPLASH
             }
             else -> {}
@@ -121,14 +174,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun finishOnboarding() {
         repository.setOnboardingCompleted(true)
-        _currentScreen.value = AppScreen.HOME
+        if (repository.isUserLoggedIn) {
+            _currentScreen.value = AppScreen.HOME
+        } else {
+            _currentScreen.value = AppScreen.LOGIN
+        }
     }
 
     fun startFromSplash() {
-        if (repository.isOnboardingCompleted()) {
+        if (repository.isUserLoggedIn) {
             _currentScreen.value = AppScreen.HOME
         } else {
-            _currentScreen.value = AppScreen.ONBOARDING
+            _currentScreen.value = AppScreen.LOGIN
         }
     }
 
