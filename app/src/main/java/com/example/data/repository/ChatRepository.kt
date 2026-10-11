@@ -295,6 +295,11 @@ class ChatRepository(private val context: Context) {
     fun selectConversation(conversationId: String) {
         val currentUid = getActiveUserId()
         if (currentUid.isBlank() || currentUid == "unauthenticated") return
+        if (conversationId.isBlank()) {
+            _currentConversation.value = null
+            _messages.value = emptyList()
+            return
+        }
 
         val conv = _conversations.value.find { it.id == conversationId && it.userId == currentUid } ?: return
         _currentConversation.value = conv
@@ -328,6 +333,14 @@ class ChatRepository(private val context: Context) {
         return newConv
     }
 
+    fun prepareNewChat() {
+        val currentUid = getActiveUserId()
+        _currentConversation.value = null
+        _messages.value = emptyList()
+        prefs.setActiveConversationId(null, currentUid)
+        rtdbManager.stopListeningToConversation()
+    }
+
     fun renameConversation(conversationId: String, newTitle: String) {
         val currentUid = getActiveUserId()
         val updated = _conversations.value.map {
@@ -354,14 +367,16 @@ class ChatRepository(private val context: Context) {
             if (updated.isNotEmpty()) {
                 selectConversation(updated.first().id)
             } else {
-                createNewConversation()
+                _currentConversation.value = null
+                _messages.value = emptyList()
+                prefs.setActiveConversationId(null, currentUid)
             }
         }
     }
 
     private fun subscribeToConversation(conversationId: String) {
         val currentUid = getActiveUserId()
-        if (currentUid.isBlank() || currentUid == "unauthenticated") return
+        if (currentUid.isBlank() || currentUid == "unauthenticated" || conversationId.isBlank()) return
 
         rtdbManager.listenToConversation(
             conversationId = conversationId,
@@ -964,71 +979,87 @@ class ChatRepository(private val context: Context) {
         }
 
         scope.launch {
-            // Check legacy migration if user previously had username-based node
-            val currentName = prefs.getDisplayUsername(targetUserId)
-            rtdbManager.checkAndMigrateLegacyAccount(targetUserId, currentName) {
+            try {
                 // 1. Restore cloud-stored display username
                 rtdbManager.fetchRemoteUsername(targetUserId) { remoteUsername ->
-                    if (!remoteUsername.isNullOrBlank()) {
-                        prefs.setCustomUsername(remoteUsername, targetUserId)
-                        _displayUsername.value = remoteUsername
-                    }
+                    try {
+                        if (!remoteUsername.isNullOrBlank()) {
+                            prefs.setCustomUsername(remoteUsername, targetUserId)
+                            _displayUsername.value = remoteUsername
+                        }
+                    } catch (_: Throwable) {}
                 }
 
                 // 2. Restore remote settings from RTDB
                 rtdbManager.fetchUserSettingsFromRtdb(targetUserId) { remoteSettings ->
-                    if (remoteSettings != null) {
-                        _settings.value = remoteSettings
-                        prefs.saveSettings(remoteSettings, targetUserId)
-                    }
+                    try {
+                        if (remoteSettings != null) {
+                            _settings.value = remoteSettings
+                            prefs.saveSettings(remoteSettings, targetUserId)
+                        }
+                    } catch (_: Throwable) {}
                 }
 
                 // 3. Restore remote memories from RTDB
                 rtdbManager.fetchUserMemoriesFromRtdb(targetUserId) { cloudMemories ->
-                    if (cloudMemories.isNotEmpty()) {
-                        memoryManager.syncFromCloud(targetUserId, cloudMemories)
-                    }
+                    try {
+                        if (cloudMemories.isNotEmpty()) {
+                            memoryManager.syncFromCloud(targetUserId, cloudMemories)
+                        }
+                    } catch (_: Throwable) {}
                 }
 
                 // 4. Restore workspace files from cloud
                 rtdbManager.fetchUserWorkspaceFilesFromRtdb(targetUserId) { cloudFiles ->
-                    if (cloudFiles.isNotEmpty()) {
-                        scope.launch {
-                            for (file in cloudFiles) {
-                                workspaceManager.createOrUpdateFile(file.filename, file.content)
+                    try {
+                        if (cloudFiles.isNotEmpty()) {
+                            scope.launch {
+                                for (file in cloudFiles) {
+                                    workspaceManager.createOrUpdateFile(file.filename, file.content)
+                                }
                             }
                         }
-                    }
+                    } catch (_: Throwable) {}
                 }
 
                 // 5. Restore conversations & messages strictly for this user (authoritative source of truth)
                 rtdbManager.fetchUserConversationsFromRtdb(targetUserId) { cloudConvs, messagesMap ->
-                    val existingLocal = prefs.getConversations(targetUserId)
-                        .filter { it.userId == targetUserId }
-                    val merged = (cloudConvs + existingLocal)
-                        .map { it.copy(userId = targetUserId) }
-                        .distinctBy { it.id }
-                        .sortedByDescending { it.updatedAt }
+                    try {
+                        val existingLocal = prefs.getConversations(targetUserId)
+                            .filter { it.userId == targetUserId }
+                        val merged = (cloudConvs + existingLocal)
+                            .map { it.copy(userId = targetUserId) }
+                            .distinctBy { it.id }
+                            .sortedByDescending { it.updatedAt }
 
-                    _conversations.value = merged
-                    prefs.saveConversations(merged, targetUserId)
+                        _conversations.value = merged
+                        prefs.saveConversations(merged, targetUserId)
 
-                    for ((cId, msgs) in messagesMap) {
-                        val localMsgs = prefs.getMessages(cId, targetUserId)
-                        val mergedMsgs = (localMsgs + msgs).distinctBy { it.messageId }.sortedBy { it.timestamp }
-                        prefs.saveMessages(cId, mergedMsgs, targetUserId)
+                        for ((cId, msgs) in messagesMap) {
+                            val localMsgs = prefs.getMessages(cId, targetUserId)
+                            val mergedMsgs = (localMsgs + msgs).distinctBy { it.messageId }.sortedBy { it.timestamp }
+                            prefs.saveMessages(cId, mergedMsgs, targetUserId)
+                        }
+
+                        if (merged.isNotEmpty()) {
+                            val activeId = prefs.getActiveConversationId(targetUserId)
+                            val targetConv = merged.find { it.id == activeId } ?: merged.first()
+                            selectConversation(targetConv.id)
+                        } else {
+                            _currentConversation.value = null
+                            _messages.value = emptyList()
+                            prefs.setActiveConversationId(null, targetUserId)
+                        }
+                        Log.d("ChatRepository", "Successfully synced ${cloudConvs.size} cloud conversations for user: $targetUserId")
+                    } catch (e: Throwable) {
+                        Log.w("ChatRepository", "Error processing cloud conversations: ${e.message}")
+                    } finally {
+                        onComplete?.invoke()
                     }
-
-                    if (merged.isNotEmpty()) {
-                        val activeId = prefs.getActiveConversationId(targetUserId)
-                        val targetConv = merged.find { it.id == activeId } ?: merged.first()
-                        selectConversation(targetConv.id)
-                    } else {
-                        createNewConversation()
-                    }
-                    Log.d("ChatRepository", "Successfully restored ${cloudConvs.size} cloud conversations for user: $targetUserId")
-                    onComplete?.invoke()
                 }
+            } catch (e: Throwable) {
+                Log.w("ChatRepository", "Error in restoreUserCloudChats: ${e.message}")
+                onComplete?.invoke()
             }
         }
     }

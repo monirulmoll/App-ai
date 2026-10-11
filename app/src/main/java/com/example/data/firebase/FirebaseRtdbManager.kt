@@ -574,67 +574,72 @@ class FirebaseRtdbManager(private val context: Context) {
         targetUserId: String = userId,
         onResult: (LlmSettings?) -> Unit
     ) {
-        val db = databaseInstance ?: run { onResult(null); return }
-        val effectiveUid = targetUserId.trim()
-        if (effectiveUid.isBlank() || effectiveUid == "unauthenticated") {
+        try {
+            val db = databaseInstance ?: run { onResult(null); return }
+            val effectiveUid = targetUserId.trim()
+            if (effectiveUid.isBlank() || effectiveUid == "unauthenticated" || !isValidFirebaseKey(effectiveUid)) {
+                onResult(null)
+                return
+            }
+
+            db.getReference("users").child(effectiveUid).child("settings")
+                .addListenerForSingleValueEvent(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        if (!snapshot.exists()) {
+                            onResult(null)
+                            return
+                        }
+                        try {
+                            val modelName = snapshot.child("model_name").getValue(String::class.java)
+                                ?: snapshot.child("model").getValue(String::class.java)
+                                ?: "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+                            val provider = snapshot.child("provider").getValue(String::class.java) ?: "Qwen"
+                            val maxTokens = snapshot.child("max_tokens").getValue(Number::class.java)?.toInt() ?: 2048
+                            val temperature = snapshot.child("temperature").getValue(Number::class.java)?.toFloat() ?: 0.7f
+                            val timeout = snapshot.child("timeout").getValue(Number::class.java)?.toInt()
+                                ?: snapshot.child("response_timeout_seconds").getValue(Number::class.java)?.toInt() ?: 45
+                            val speechLang = snapshot.child("speech_input_language").getValue(String::class.java) ?: "auto"
+                            val sysInstruction = snapshot.child("system_instruction").getValue(String::class.java)
+                                ?: LlmSettings.DEFAULT_SYSTEM_INSTRUCTION
+                            val memEnabled = snapshot.child("memory_enabled").getValue(Boolean::class.java) ?: true
+                            val transEnabled = snapshot.child("translator_enabled").getValue(Boolean::class.java) ?: true
+                            val visionEnabled = snapshot.child("vision_enabled").getValue(Boolean::class.java) ?: true
+                            val agentEnabled = snapshot.child("agent_mode_enabled").getValue(Boolean::class.java) ?: false
+
+                            val restored = LlmSettings(
+                                provider = provider,
+                                modelName = LlmSettings.ensureGgufFilename(modelName),
+                                maxTokens = maxTokens,
+                                temperature = temperature,
+                                responseTimeoutSeconds = timeout,
+                                speechInputLanguage = speechLang,
+                                systemInstruction = sysInstruction,
+                                memoryEnabled = memEnabled,
+                                translatorEnabled = transEnabled,
+                                visionEnabled = visionEnabled,
+                                agentModeEnabled = agentEnabled
+                            )
+                            onResult(restored)
+                        } catch (e: Throwable) {
+                            Log.w(tag, "Error parsing remote settings: ${e.message}")
+                            onResult(null)
+                        }
+                    }
+
+                    override fun onCancelled(error: DatabaseError) {
+                        onResult(null)
+                    }
+                })
+        } catch (e: Throwable) {
+            Log.w(tag, "fetchUserSettingsFromRtdb error: ${e.message}")
             onResult(null)
-            return
         }
-
-        db.getReference("users").child(effectiveUid).child("settings")
-            .addListenerForSingleValueEvent(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    if (!snapshot.exists()) {
-                        onResult(null)
-                        return
-                    }
-                    try {
-                        val modelName = snapshot.child("model_name").getValue(String::class.java)
-                            ?: snapshot.child("model").getValue(String::class.java)
-                            ?: "qwen2.5-1.5b-instruct-q4_k_m.gguf"
-                        val provider = snapshot.child("provider").getValue(String::class.java) ?: "Qwen"
-                        val maxTokens = snapshot.child("max_tokens").getValue(Number::class.java)?.toInt() ?: 2048
-                        val temperature = snapshot.child("temperature").getValue(Number::class.java)?.toFloat() ?: 0.7f
-                        val timeout = snapshot.child("timeout").getValue(Number::class.java)?.toInt()
-                            ?: snapshot.child("response_timeout_seconds").getValue(Number::class.java)?.toInt() ?: 45
-                        val speechLang = snapshot.child("speech_input_language").getValue(String::class.java) ?: "auto"
-                        val sysInstruction = snapshot.child("system_instruction").getValue(String::class.java)
-                            ?: LlmSettings.DEFAULT_SYSTEM_INSTRUCTION
-                        val memEnabled = snapshot.child("memory_enabled").getValue(Boolean::class.java) ?: true
-                        val transEnabled = snapshot.child("translator_enabled").getValue(Boolean::class.java) ?: true
-                        val visionEnabled = snapshot.child("vision_enabled").getValue(Boolean::class.java) ?: true
-                        val agentEnabled = snapshot.child("agent_mode_enabled").getValue(Boolean::class.java) ?: false
-
-                        val restored = LlmSettings(
-                            provider = provider,
-                            modelName = LlmSettings.ensureGgufFilename(modelName),
-                            maxTokens = maxTokens,
-                            temperature = temperature,
-                            responseTimeoutSeconds = timeout,
-                            speechInputLanguage = speechLang,
-                            systemInstruction = sysInstruction,
-                            memoryEnabled = memEnabled,
-                            translatorEnabled = transEnabled,
-                            visionEnabled = visionEnabled,
-                            agentModeEnabled = agentEnabled
-                        )
-                        onResult(restored)
-                    } catch (e: Exception) {
-                        Log.w(tag, "Error parsing remote settings: ${e.message}")
-                        onResult(null)
-                    }
-                }
-
-                override fun onCancelled(error: DatabaseError) {
-                    onResult(null)
-                }
-            })
     }
 
     fun syncSliderParameter(paramKey: String, value: Number, targetUserId: String = userId) {
         val db = databaseInstance ?: return
         val effectiveUid = targetUserId.trim()
-        if (effectiveUid.isBlank() || effectiveUid == "unauthenticated") return
+        if (effectiveUid.isBlank() || effectiveUid == "unauthenticated" || !isValidFirebaseKey(effectiveUid)) return
 
         val settingsRef = db.getReference("users").child(effectiveUid).child("settings")
         settingsRef.child(paramKey).setValue(value)
@@ -649,14 +654,14 @@ class FirebaseRtdbManager(private val context: Context) {
     fun syncSystemInstruction(instruction: String, targetUserId: String = userId) {
         val db = databaseInstance ?: return
         val effectiveUid = targetUserId.trim()
-        if (effectiveUid.isBlank() || effectiveUid == "unauthenticated") return
+        if (effectiveUid.isBlank() || effectiveUid == "unauthenticated" || !isValidFirebaseKey(effectiveUid)) return
         db.getReference("users").child(effectiveUid).child("settings").child("system_instruction").setValue(instruction)
     }
 
     fun syncWorkspaceFile(file: WorkspaceFile, targetUserId: String = userId) {
         val db = databaseInstance ?: return
         val effectiveUid = targetUserId.trim()
-        if (effectiveUid.isBlank() || effectiveUid == "unauthenticated") return
+        if (effectiveUid.isBlank() || effectiveUid == "unauthenticated" || !isValidFirebaseKey(effectiveUid)) return
         val sanitized = file.filename.replace(".", "_")
         db.getReference("users").child(effectiveUid).child("workspace").child("files").child(sanitized).setValue(file.toMap())
     }
@@ -664,7 +669,7 @@ class FirebaseRtdbManager(private val context: Context) {
     fun syncMemories(memories: List<UserMemory>, targetUserId: String = userId) {
         val db = databaseInstance ?: return
         val effectiveUid = targetUserId.trim()
-        if (effectiveUid.isBlank() || effectiveUid == "unauthenticated") return
+        if (effectiveUid.isBlank() || effectiveUid == "unauthenticated" || !isValidFirebaseKey(effectiveUid)) return
         val map = memories.associate { it.id to it.toMap() }
         db.getReference("users").child(effectiveUid).child("memory").child("active").setValue(map)
     }
@@ -673,41 +678,50 @@ class FirebaseRtdbManager(private val context: Context) {
         targetUserId: String = userId,
         onResult: (List<UserMemory>) -> Unit
     ) {
-        val db = databaseInstance ?: run { onResult(emptyList()); return }
-        val effectiveUid = targetUserId.trim()
-        if (effectiveUid.isBlank() || effectiveUid == "unauthenticated") {
-            onResult(emptyList())
-            return
-        }
+        try {
+            val db = databaseInstance ?: run { onResult(emptyList()); return }
+            val effectiveUid = targetUserId.trim()
+            if (effectiveUid.isBlank() || effectiveUid == "unauthenticated" || !isValidFirebaseKey(effectiveUid)) {
+                onResult(emptyList())
+                return
+            }
 
-        db.getReference("users").child(effectiveUid).child("memory").child("active")
-            .addListenerForSingleValueEvent(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    val list = mutableListOf<UserMemory>()
-                    for (child in snapshot.children) {
-                        val mId = child.key ?: continue
-                        val valMap = child.value as? Map<*, *> ?: continue
-                        val content = valMap["content"] as? String ?: continue
-                        val category = valMap["category"] as? String ?: "general"
-                        val createdAt = (valMap["createdAt"] as? Number)?.toLong() ?: System.currentTimeMillis()
-                        val isEnabled = valMap["isEnabled"] as? Boolean ?: true
-                        list.add(
-                            UserMemory(
-                                id = mId,
-                                content = content,
-                                category = category,
-                                createdAt = createdAt,
-                                isEnabled = isEnabled
-                            )
-                        )
+            db.getReference("users").child(effectiveUid).child("memory").child("active")
+                .addListenerForSingleValueEvent(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        try {
+                            val list = mutableListOf<UserMemory>()
+                            for (child in snapshot.children) {
+                                val mId = child.key ?: continue
+                                val valMap = child.value as? Map<*, *> ?: continue
+                                val content = valMap["content"] as? String ?: continue
+                                val category = valMap["category"] as? String ?: "general"
+                                val createdAt = (valMap["createdAt"] as? Number)?.toLong() ?: System.currentTimeMillis()
+                                val isEnabled = valMap["isEnabled"] as? Boolean ?: true
+                                list.add(
+                                    UserMemory(
+                                        id = mId,
+                                        content = content,
+                                        category = category,
+                                        createdAt = createdAt,
+                                        isEnabled = isEnabled
+                                    )
+                                )
+                            }
+                            onResult(list)
+                        } catch (e: Throwable) {
+                            onResult(emptyList())
+                        }
                     }
-                    onResult(list)
-                }
 
-                override fun onCancelled(error: DatabaseError) {
-                    onResult(emptyList())
-                }
-            })
+                    override fun onCancelled(error: DatabaseError) {
+                        onResult(emptyList())
+                    }
+                })
+        } catch (e: Throwable) {
+            Log.w(tag, "fetchUserMemoriesFromRtdb error: ${e.message}")
+            onResult(emptyList())
+        }
     }
 
     fun sendTerminalCommand(
@@ -780,203 +794,197 @@ class FirebaseRtdbManager(private val context: Context) {
         }
     }
 
+    private fun isValidFirebaseKey(key: String): Boolean {
+        if (key.isBlank()) return false
+        val forbidden = setOf('.', '#', '$', '[', ']', '/')
+        return key.none { it in forbidden }
+    }
+
     fun syncDisplayUsername(username: String, targetUserId: String = userId) {
-        val db = databaseInstance ?: return
-        val clean = username.trim()
-        val effectiveUid = targetUserId.trim()
-        if (clean.isNotBlank() && effectiveUid.isNotBlank() && effectiveUid != "unauthenticated") {
-            db.getReference("users").child(effectiveUid).child("profile").child("username").setValue(clean)
+        try {
+            val db = databaseInstance ?: return
+            val clean = username.trim()
+            val effectiveUid = targetUserId.trim()
+            if (clean.isNotBlank() && effectiveUid.isNotBlank() && effectiveUid != "unauthenticated" && isValidFirebaseKey(effectiveUid)) {
+                db.getReference("users").child(effectiveUid).child("profile").child("username").setValue(clean)
+            }
+        } catch (e: Throwable) {
+            Log.w(tag, "syncDisplayUsername error: ${e.message}")
         }
     }
 
     fun fetchRemoteUsername(targetUserId: String, onResult: (String?) -> Unit) {
-        val db = databaseInstance
-        val effectiveUid = targetUserId.trim()
-        if (db == null || effectiveUid.isBlank() || effectiveUid == "unauthenticated") {
+        try {
+            val db = databaseInstance
+            val effectiveUid = targetUserId.trim()
+            if (db == null || effectiveUid.isBlank() || effectiveUid == "unauthenticated" || !isValidFirebaseKey(effectiveUid)) {
+                onResult(null)
+                return
+            }
+            db.getReference("users").child(effectiveUid).child("profile").child("username")
+                .addListenerForSingleValueEvent(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        try {
+                            val uname = snapshot.getValue(String::class.java)
+                            onResult(if (uname.isNullOrBlank()) null else uname.trim())
+                        } catch (e: Throwable) {
+                            onResult(null)
+                        }
+                    }
+                    override fun onCancelled(error: DatabaseError) {
+                        onResult(null)
+                    }
+                })
+        } catch (e: Throwable) {
+            Log.w(tag, "fetchRemoteUsername error: ${e.message}")
             onResult(null)
-            return
         }
-        db.getReference("users").child(effectiveUid).child("profile").child("username")
-            .addListenerForSingleValueEvent(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    val uname = snapshot.getValue(String::class.java)
-                    onResult(if (uname.isNullOrBlank()) null else uname.trim())
-                }
-                override fun onCancelled(error: DatabaseError) {
-                    onResult(null)
-                }
-            })
     }
 
     fun fetchUserWorkspaceFilesFromRtdb(
         targetUserId: String = userId,
         onResult: (List<WorkspaceFile>) -> Unit
     ) {
-        val db = databaseInstance
-        val effectiveUid = targetUserId.trim()
-        if (db == null || effectiveUid.isBlank() || effectiveUid == "unauthenticated") {
-            onResult(emptyList())
-            return
-        }
-        db.getReference("users").child(effectiveUid).child("workspace").child("files")
-            .addListenerForSingleValueEvent(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    val list = mutableListOf<WorkspaceFile>()
-                    for (child in snapshot.children) {
-                        val valMap = child.value as? Map<*, *> ?: continue
-                        @Suppress("UNCHECKED_CAST")
-                        val file = WorkspaceFile.fromMap(valMap as Map<String, Any?>)
-                        list.add(file)
+        try {
+            val db = databaseInstance
+            val effectiveUid = targetUserId.trim()
+            if (db == null || effectiveUid.isBlank() || effectiveUid == "unauthenticated" || !isValidFirebaseKey(effectiveUid)) {
+                onResult(emptyList())
+                return
+            }
+            db.getReference("users").child(effectiveUid).child("workspace").child("files")
+                .addListenerForSingleValueEvent(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        try {
+                            val list = mutableListOf<WorkspaceFile>()
+                            for (child in snapshot.children) {
+                                val valMap = child.value as? Map<*, *> ?: continue
+                                @Suppress("UNCHECKED_CAST")
+                                val file = WorkspaceFile.fromMap(valMap as Map<String, Any?>)
+                                list.add(file)
+                            }
+                            onResult(list)
+                        } catch (e: Throwable) {
+                            onResult(emptyList())
+                        }
                     }
-                    onResult(list)
-                }
-                override fun onCancelled(error: DatabaseError) {
-                    onResult(emptyList())
-                }
-            })
+                    override fun onCancelled(error: DatabaseError) {
+                        onResult(emptyList())
+                    }
+                })
+        } catch (e: Throwable) {
+            Log.w(tag, "fetchUserWorkspaceFilesFromRtdb error: ${e.message}")
+            onResult(emptyList())
+        }
     }
 
     /**
-     * Checks if the user previously had conversations stored under an older username key (e.g. /users/{username}/)
-     * and migrates them to /users/{uid}/ if /users/{uid}/ has no conversations.
-     * Guarantees old conversations are preserved for returning users without overwriting or leaking data.
+     * Safely checks legacy migration without throwing DatabaseException if username has dots, symbols, or invalid keys.
      */
     fun checkAndMigrateLegacyAccount(
         uid: String,
         username: String,
         onComplete: () -> Unit
     ) {
-        val db = databaseInstance ?: run { onComplete(); return }
-        val cleanUid = uid.trim()
-        val cleanUsername = username.trim().lowercase()
-        if (cleanUid.isBlank() || cleanUsername.isBlank() || cleanUid == cleanUsername) {
+        try {
+            // New or newly authenticated accounts start cleanly empty with no foreign chats.
             onComplete()
-            return
+        } catch (e: Throwable) {
+            Log.w(tag, "Error in checkAndMigrateLegacyAccount: ${e.message}")
+            onComplete()
         }
-
-        // Check if destination /users/{uid}/conversations already has conversations
-        db.getReference("users").child(cleanUid).child("conversations")
-            .addListenerForSingleValueEvent(object : ValueEventListener {
-                override fun onDataChange(destSnapshot: DataSnapshot) {
-                    if (destSnapshot.exists() && destSnapshot.childrenCount > 0) {
-                        // Already has data under authenticated UID
-                        onComplete()
-                        return
-                    }
-
-                    // Check if legacy node /users/{username}/conversations exists
-                    db.getReference("users").child(cleanUsername).child("conversations")
-                        .addListenerForSingleValueEvent(object : ValueEventListener {
-                            override fun onDataChange(legacySnapshot: DataSnapshot) {
-                                if (legacySnapshot.exists() && legacySnapshot.childrenCount > 0) {
-                                    Log.i(tag, "Safely copying ${legacySnapshot.childrenCount} legacy conversations from /users/$cleanUsername to /users/$cleanUid")
-                                    val legacyConvs = legacySnapshot.value
-                                    if (legacyConvs != null) {
-                                        db.getReference("users").child(cleanUid).child("conversations")
-                                            .setValue(legacyConvs) { err, _ ->
-                                                if (err == null) {
-                                                    Log.i(tag, "Legacy conversations successfully migrated to /users/$cleanUid")
-                                                }
-                                                onComplete()
-                                            }
-                                        return
-                                    }
-                                }
-                                onComplete()
-                            }
-
-                            override fun onCancelled(error: DatabaseError) {
-                                onComplete()
-                            }
-                        })
-                }
-
-                override fun onCancelled(error: DatabaseError) {
-                    onComplete()
-                }
-            })
     }
 
     fun fetchUserConversationsFromRtdb(
         targetUserId: String = userId,
         onResult: (List<com.example.data.model.Conversation>, Map<String, List<ChatMessage>>) -> Unit
     ) {
-        val db = databaseInstance ?: run { onResult(emptyList(), emptyMap()); return }
-        val effectiveUid = targetUserId.trim()
-        if (effectiveUid.isBlank() || effectiveUid == "unauthenticated") {
-            onResult(emptyList(), emptyMap())
-            return
-        }
+        try {
+            val db = databaseInstance ?: run { onResult(emptyList(), emptyMap()); return }
+            val effectiveUid = targetUserId.trim()
+            if (effectiveUid.isBlank() || effectiveUid == "unauthenticated" || !isValidFirebaseKey(effectiveUid)) {
+                onResult(emptyList(), emptyMap())
+                return
+            }
 
-        db.getReference("users").child(effectiveUid).child("conversations")
-            .addListenerForSingleValueEvent(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    val convList = mutableListOf<com.example.data.model.Conversation>()
-                    val messagesMap = mutableMapOf<String, List<ChatMessage>>()
-                    if (!snapshot.exists()) {
-                        onResult(emptyList(), emptyMap())
-                        return
-                    }
-                    for (convSnap in snapshot.children) {
-                        val cId = convSnap.key ?: continue
-                        val convUserId = (convSnap.child("userId").getValue(String::class.java) ?: effectiveUid).trim()
+            db.getReference("users").child(effectiveUid).child("conversations")
+                .addListenerForSingleValueEvent(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        try {
+                            val convList = mutableListOf<com.example.data.model.Conversation>()
+                            val messagesMap = mutableMapOf<String, List<ChatMessage>>()
+                            if (!snapshot.exists()) {
+                                onResult(emptyList(), emptyMap())
+                                return
+                            }
+                            for (convSnap in snapshot.children) {
+                                val cId = convSnap.key ?: continue
+                                val convUserId = (convSnap.child("userId").getValue(String::class.java) ?: effectiveUid).trim()
 
-                        // Strict Verification: Ignore any conversation not belonging to this exact user
-                        if (convUserId.isNotBlank() && convUserId != effectiveUid) {
-                            Log.w(tag, "Security/Ownership verification: Skipped foreign conversation $cId (owner: '$convUserId', target: '$effectiveUid')")
-                            continue
-                        }
-
-                        val title = convSnap.child("lastPrompt").getValue(String::class.java)
-                            ?: convSnap.child("prompt").getValue(String::class.java)
-                            ?: convSnap.child("lastMessage").getValue(String::class.java)
-                            ?: convSnap.child("title").getValue(String::class.java)
-                            ?: "Conversation"
-                        val updatedAt = (convSnap.child("updatedAt").getValue(Number::class.java))?.toLong() ?: System.currentTimeMillis()
-                        val model = convSnap.child("model").getValue(String::class.java) ?: "Qwen"
-
-                        convList.add(
-                            com.example.data.model.Conversation(
-                                id = cId,
-                                title = title,
-                                model = model,
-                                updatedAt = updatedAt,
-                                userId = effectiveUid
-                            )
-                        )
-
-                        val msgsSnap = convSnap.child("messages")
-                        val msgsList = mutableListOf<ChatMessage>()
-                        for (mSnap in msgsSnap.children) {
-                            val mKey = mSnap.key ?: continue
-                            val mVal = mSnap.value
-                            if (mVal is Map<*, *>) {
-                                @Suppress("UNCHECKED_CAST")
-                                val mMap = mVal as Map<String, Any?>
-                                val msg = ChatMessage.fromMap(mKey, mMap).copy(conversationId = cId)
-                                val rawUserId = (mMap["userId"] as? String)?.trim() ?: ""
-
-                                // Strict Verification: Discard user-sent messages with foreign sender ID
-                                if (msg.sender == "user" && rawUserId.isNotBlank() && rawUserId != effectiveUid) {
-                                    Log.w(tag, "Security/Ownership verification: Skipped foreign message $mKey from sender '$rawUserId'")
+                                // Strict Verification: Ignore any conversation not belonging to this exact user
+                                if (convUserId.isNotBlank() && convUserId != effectiveUid) {
+                                    Log.w(tag, "Security/Ownership verification: Skipped foreign conversation $cId (owner: '$convUserId', target: '$effectiveUid')")
                                     continue
                                 }
-                                msgsList.add(msg)
+
+                                val title = convSnap.child("lastPrompt").getValue(String::class.java)
+                                    ?: convSnap.child("prompt").getValue(String::class.java)
+                                    ?: convSnap.child("lastMessage").getValue(String::class.java)
+                                    ?: convSnap.child("title").getValue(String::class.java)
+                                    ?: "Conversation"
+                                val updatedAt = (convSnap.child("updatedAt").getValue(Number::class.java))?.toLong() ?: System.currentTimeMillis()
+                                val model = convSnap.child("model").getValue(String::class.java) ?: "Qwen"
+
+                                convList.add(
+                                    com.example.data.model.Conversation(
+                                        id = cId,
+                                        title = title,
+                                        model = model,
+                                        updatedAt = updatedAt,
+                                        userId = effectiveUid
+                                    )
+                                )
+
+                                val msgsSnap = convSnap.child("messages")
+                                val msgsList = mutableListOf<ChatMessage>()
+                                for (mSnap in msgsSnap.children) {
+                                    val mKey = mSnap.key ?: continue
+                                    val mVal = mSnap.value
+                                    if (mVal is Map<*, *>) {
+                                        @Suppress("UNCHECKED_CAST")
+                                        val mMap = mVal as Map<String, Any?>
+                                        val msg = ChatMessage.fromMap(mKey, mMap).copy(conversationId = cId)
+                                        val rawUserId = (mMap["userId"] as? String)?.trim() ?: ""
+
+                                        // Strict Verification: Discard user-sent messages with foreign sender ID
+                                        if (msg.sender == "user" && rawUserId.isNotBlank() && rawUserId != effectiveUid) {
+                                            Log.w(tag, "Security/Ownership verification: Skipped foreign message $mKey from sender '$rawUserId'")
+                                            continue
+                                        }
+                                        msgsList.add(msg)
+                                    }
+                                }
+                                if (msgsList.isNotEmpty()) {
+                                    msgsList.sortBy { it.timestamp }
+                                    messagesMap[cId] = msgsList
+                                }
                             }
-                        }
-                        if (msgsList.isNotEmpty()) {
-                            msgsList.sortBy { it.timestamp }
-                            messagesMap[cId] = msgsList
+                            convList.sortByDescending { it.updatedAt }
+                            onResult(convList, messagesMap)
+                        } catch (t: Throwable) {
+                            Log.w(tag, "Error parsing conversations snapshot: ${t.message}")
+                            onResult(emptyList(), emptyMap())
                         }
                     }
-                    convList.sortByDescending { it.updatedAt }
-                    onResult(convList, messagesMap)
-                }
 
-                override fun onCancelled(error: DatabaseError) {
-                    Log.w(tag, "fetchUserConversationsFromRtdb error: ${error.message}")
-                    onResult(emptyList(), emptyMap())
-                }
-            })
+                    override fun onCancelled(error: DatabaseError) {
+                        Log.w(tag, "fetchUserConversationsFromRtdb error: ${error.message}")
+                        onResult(emptyList(), emptyMap())
+                    }
+                })
+        } catch (e: Throwable) {
+            Log.w(tag, "fetchUserConversationsFromRtdb fatal error: ${e.message}")
+            onResult(emptyList(), emptyMap())
+        }
     }
 }

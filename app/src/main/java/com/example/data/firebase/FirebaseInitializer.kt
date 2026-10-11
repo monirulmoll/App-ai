@@ -19,36 +19,75 @@ import java.net.URI
 object FirebaseInitializer {
     private const val TAG = "FirebaseInitializer"
 
+    const val DEFAULT_API_KEY = "AIzaSyC7BGNxgeHIwg8N_EwbqOhno7BrjceL0So"
+    const val DEFAULT_PROJECT_ID = "ussr-error-404"
+    const val DEFAULT_FIREBASE_APP_ID = "1:96131864914:android:6dbb110c23cd195cd3c28b"
+    const val DEFAULT_APPLICATION_ID = "com.aistudio.gemoai.rtdbch"
+    const val DEFAULT_GCM_SENDER_ID = "96131864914"
+
     @Synchronized
     fun ensureInitialized(context: Context, databaseUrl: String = DatabaseConfig.MAIN_DATABASE_URL): FirebaseApp? {
         val appContext = context.applicationContext ?: context
+        val effectiveUrl = if (databaseUrl.trim().isBlank()) DatabaseConfig.MAIN_DATABASE_URL else databaseUrl.trim().removeSuffix("/")
         try {
-            try {
-                return FirebaseApp.getInstance()
-            } catch (_: Exception) {}
-
+            // Check existing instances
             val existingApps = FirebaseApp.getApps(appContext)
             if (existingApps.isNotEmpty()) {
-                return existingApps.first()
+                val app = existingApps.first()
+                if (app.options.apiKey.contains("DummyKey") || app.options.databaseUrl.isNullOrBlank()) {
+                    Log.w(TAG, "Existing FirebaseApp missing databaseUrl or had dummy key, configuring...")
+                    try {
+                        val baseOptions = try {
+                            FirebaseOptions.fromResource(appContext)
+                        } catch (_: Exception) {
+                            app.options
+                        } ?: app.options
+
+                        val newOptions = FirebaseOptions.Builder(baseOptions)
+                            .setDatabaseUrl(effectiveUrl)
+                            .setApplicationId(
+                                if (baseOptions.applicationId.contains(":")) baseOptions.applicationId else DEFAULT_FIREBASE_APP_ID
+                            )
+                            .setProjectId(if (baseOptions.projectId.isNullOrBlank()) DEFAULT_PROJECT_ID else baseOptions.projectId)
+                            .setApiKey(if (baseOptions.apiKey.contains("DummyKey")) DEFAULT_API_KEY else baseOptions.apiKey)
+                            .build()
+
+                        app.delete()
+                        return FirebaseApp.initializeApp(appContext, newOptions)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to recreate FirebaseApp: ${e.message}")
+                        return app
+                    }
+                } else {
+                    return app
+                }
             }
 
-            val effectiveUrl = if (databaseUrl.trim().isBlank()) DatabaseConfig.MAIN_DATABASE_URL else databaseUrl.trim().removeSuffix("/")
-            val host = try {
-                URI(effectiveUrl).host ?: "ussr-error-404-default"
+            val resourceOptions = try {
+                FirebaseOptions.fromResource(appContext)
             } catch (_: Exception) {
-                "ussr-error-404-default"
+                null
             }
-            val projectId = host.substringBefore(".")
 
-            val options = FirebaseOptions.Builder()
-                .setApplicationId(appContext.packageName)
-                .setProjectId(projectId)
-                .setApiKey("AIzaSyDummyKeyForFirebaseAuth1234567890")
-                .setDatabaseUrl(effectiveUrl)
-                .build()
+            val options = if (resourceOptions != null && !resourceOptions.apiKey.contains("DummyKey")) {
+                FirebaseOptions.Builder(resourceOptions)
+                    .setDatabaseUrl(effectiveUrl)
+                    .setApplicationId(
+                        if (resourceOptions.applicationId.contains(":")) resourceOptions.applicationId else DEFAULT_FIREBASE_APP_ID
+                    )
+                    .build()
+            } else {
+                FirebaseOptions.Builder()
+                    .setApplicationId(DEFAULT_FIREBASE_APP_ID)
+                    .setGcmSenderId(DEFAULT_GCM_SENDER_ID)
+                    .setProjectId(DEFAULT_PROJECT_ID)
+                    .setApiKey(DEFAULT_API_KEY)
+                    .setDatabaseUrl(effectiveUrl)
+                    .build()
+            }
 
             val app = FirebaseApp.initializeApp(appContext, options)
-            Log.d(TAG, "FirebaseApp initialized with project: $projectId, db: $effectiveUrl")
+            Log.d(TAG, "FirebaseApp initialized with project: ${options.projectId}, db: ${options.databaseUrl}")
             return app
         } catch (e: Exception) {
             Log.w(TAG, "Failed to initialize FirebaseApp: ${e.message}")
@@ -67,15 +106,16 @@ object FirebaseInitializer {
     }
 
     fun getSafeDatabase(context: Context, url: String = DatabaseConfig.MAIN_DATABASE_URL): FirebaseDatabase? {
-        ensureInitialized(context, url)
         val sanitized = if (url.trim().isBlank()) DatabaseConfig.MAIN_DATABASE_URL else url.trim().removeSuffix("/")
+        ensureInitialized(context, sanitized)
         return try {
             FirebaseDatabase.getInstance(sanitized)
-        } catch (_: Exception) {
+        } catch (e1: Exception) {
             try {
-                FirebaseDatabase.getInstance()
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to get FirebaseDatabase instance: ${e.message}")
+                val app = FirebaseApp.getInstance()
+                FirebaseDatabase.getInstance(app, sanitized)
+            } catch (e2: Exception) {
+                Log.w(TAG, "Failed to get FirebaseDatabase instance: ${e2.message}")
                 null
             }
         }

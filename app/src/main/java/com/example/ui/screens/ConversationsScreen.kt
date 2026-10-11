@@ -193,18 +193,54 @@ fun ConversationsScreen(
                         .weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = if (searchQuery.isNotBlank()) "No conversations match \"$searchQuery\"" else "No conversations yet",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(24.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(CircleShape)
+                                .background(GeminiBlue.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Chat,
+                                contentDescription = null,
+                                tint = GeminiBlue,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = "Start chatting",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = if (searchQuery.isNotBlank()) "No conversations match \"$searchQuery\"" else "No conversations yet. Tap below to begin.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        androidx.compose.material3.Button(
+                            onClick = onNewChat,
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = GeminiBlue),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Start chatting", fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                 }
             } else {
+                val safeFiltered = filteredList.filter { it.id.isNotBlank() }.distinctBy { it.id }
                 LazyColumn(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(filteredList, key = { it.id }) { conv ->
+                    items(safeFiltered, key = { it.id }) { conv ->
                         var showMenu by remember { mutableStateOf(false) }
                         val timeStr = remember(conv.updatedAt) {
                             SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(conv.updatedAt))

@@ -52,13 +52,10 @@ class GemoAuthManager(private val context: Context) {
     val currentFirebaseUser: FirebaseUser?
         get() = try { firebaseAuth.currentUser } catch (_: Exception) { null }
 
-    private val database: FirebaseDatabase by lazy {
+    private fun getSafeDatabaseInstance(): FirebaseDatabase? {
         val settings = prefs.getSettings()
-        FirebaseInitializer.getSafeDatabase(context, settings.firebaseUrl)
-            ?: run {
-                FirebaseInitializer.ensureInitialized(context, settings.firebaseUrl)
-                FirebaseDatabase.getInstance()
-            }
+        val url = if (settings.firebaseUrl.isNotBlank()) settings.firebaseUrl else DatabaseConfig.MAIN_DATABASE_URL
+        return FirebaseInitializer.getSafeDatabase(context, url)
     }
 
     init {
@@ -449,7 +446,12 @@ class GemoAuthManager(private val context: Context) {
         providerId: String = "password",
         now: Long = System.currentTimeMillis()
     ): Boolean = withContext(Dispatchers.IO) {
-        val userRef = database.getReference("users").child(uid)
+        val db = try { getSafeDatabaseInstance() } catch (_: Throwable) { null }
+        if (db == null) {
+            Log.w(tag, "FirebaseDatabase instance unavailable during initializeNewUserAccount")
+            return@withContext true
+        }
+        val userRef = db.getReference("users").child(uid)
 
         val profileMap = mapOf(
             "userId" to uid,
@@ -506,42 +508,6 @@ class GemoAuthManager(private val context: Context) {
             "config" to mapOf("enabled" to true)
         )
 
-        val initialConversationId = UUID.randomUUID().toString().replace("-", "").take(12)
-        val initialWelcomeMessageId = "msg_welcome_" + now
-
-        val initialMessageMap = mapOf(
-            "messageId" to initialWelcomeMessageId,
-            "conversationId" to initialConversationId,
-            "requestId" to UUID.randomUUID().toString(),
-            "sender" to "ai",
-            "userId" to uid,
-            "text" to "Hello $displayName! Welcome to Gemo AI created by Rohit. How can I help you today?",
-            "status" to "completed",
-            "timestamp" to now,
-            "model" to "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-            "maker" to "Rohit"
-        )
-
-        val initialConversationMap = mapOf(
-            "id" to initialConversationId,
-            "title" to "Welcome to Gemo AI",
-            "userId" to uid,
-            "model" to "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-            "maker" to "Rohit",
-            "createdAt" to now,
-            "updatedAt" to now,
-            "lastMessage" to "Hello $displayName! Welcome to Gemo AI created by Rohit.",
-            "prompt" to "Welcome",
-            "lastPrompt" to "Welcome",
-            "messages" to mapOf(
-                initialWelcomeMessageId to initialMessageMap
-            )
-        )
-
-        val conversationsMap = mapOf(
-            initialConversationId to initialConversationMap
-        )
-
         val workspaceMap = mapOf(
             "files" to mapOf(
                 "readme_md" to mapOf(
@@ -565,15 +531,14 @@ class GemoAuthManager(private val context: Context) {
             "lastCommand" to "",
             "updatedAt" to now,
             "terminal" to mapOf(
-                "commands" to mapOf<String, Any>(),
-                "output" to mapOf<String, Any>()
+                "active" to false
             )
         )
 
+        // Strict requirement: No pre-existing chats; start with completely clean slate
         val updates = mapOf<String, Any>(
             "profile" to profileMap,
             "auth" to authMap,
-            "conversations" to conversationsMap,
             "memory" to memoryMap,
             "settings" to settingsMap,
             "workspace" to workspaceMap,
@@ -582,15 +547,20 @@ class GemoAuthManager(private val context: Context) {
             "stopGeneration" to false
         )
 
-        suspendCancellableCoroutine<Boolean> { cont ->
-            userRef.updateChildren(updates) { error, _ ->
-                if (error == null) {
-                    if (cont.isActive) cont.resume(true)
-                } else {
-                    Log.e(tag, "Failed to initialize user schema: ${error.message}")
-                    if (cont.isActive) cont.resume(false)
+        try {
+            suspendCancellableCoroutine<Boolean> { cont ->
+                userRef.updateChildren(updates) { error, _ ->
+                    if (error == null) {
+                        if (cont.isActive) cont.resume(true)
+                    } else {
+                        Log.e(tag, "Failed to initialize user schema: ${error.message}")
+                        if (cont.isActive) cont.resume(false)
+                    }
                 }
             }
+        } catch (e: Exception) {
+            Log.w(tag, "Error in initializeNewUserAccount: ${e.message}")
+            true
         }
     }
 
@@ -603,122 +573,131 @@ class GemoAuthManager(private val context: Context) {
         displayName: String,
         email: String? = null
     ) = withContext(Dispatchers.IO) {
-        val userRef = database.getReference("users").child(uid)
-        val now = System.currentTimeMillis()
+        try {
+            val db = getSafeDatabaseInstance() ?: return@withContext
+            val userRef = db.getReference("users").child(uid)
+            val now = System.currentTimeMillis()
 
-        userRef.addListenerForSingleValueEvent(object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                val backfills = mutableMapOf<String, Any>()
+            userRef.addListenerForSingleValueEvent(object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    try {
+                        val backfills = mutableMapOf<String, Any>()
 
-                if (!snapshot.hasChild("profile")) {
-                    backfills["profile"] = mapOf(
-                        "userId" to uid,
-                        "username" to displayName,
-                        "canonicalUsername" to displayName.lowercase().trim(),
-                        "email" to (email ?: ""),
-                        "createdAt" to now,
-                        "updatedAt" to now
-                    )
-                }
-
-                if (!snapshot.hasChild("auth")) {
-                    backfills["auth"] = mapOf(
-                        "accountStatus" to "active",
-                        "lastSignInAt" to now
-                    )
-                }
-
-                if (!snapshot.hasChild("settings")) {
-                    backfills["settings"] = mapOf(
-                        "agent_mode_enabled" to false,
-                        "max_tokens" to 2048,
-                        "memory_enabled" to true,
-                        "model_name" to "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-                        "provider" to "Qwen",
-                        "response_timeout_seconds" to 45,
-                        "speech_input_language" to "auto",
-                        "system_instruction" to "You are Gemo AI, an intelligent AI created by Rohit. Whenever introducing yourself or asked who created or made you, proudly state that your maker and creator is Rohit.",
-                        "temperature" to 0.7,
-                        "timeout" to 45,
-                        "translator_enabled" to true,
-                        "updated_at" to now,
-                        "vision_enabled" to true
-                    )
-                }
-
-                if (!snapshot.hasChild("memory")) {
-                    backfills["memory"] = mapOf(
-                        "active" to mapOf(
-                            "mem_creator" to mapOf(
-                                "category" to "fact",
-                                "content" to "Gemo AI's creator and maker is Rohit.",
+                        if (!snapshot.hasChild("profile")) {
+                            backfills["profile"] = mapOf(
+                                "userId" to uid,
+                                "username" to displayName,
+                                "canonicalUsername" to displayName.lowercase().trim(),
+                                "email" to (email ?: ""),
                                 "createdAt" to now,
-                                "id" to "mem_creator",
-                                "isEnabled" to true
-                            ),
-                            "mem_pref_lang" to mapOf(
-                                "category" to "preference",
-                                "content" to "User prefers polite, intelligent, and context-aware responses in their typed language.",
-                                "createdAt" to now,
-                                "id" to "mem_pref_lang",
-                                "isEnabled" to true
+                                "updatedAt" to now
                             )
-                        ),
-                        "config" to mapOf("enabled" to true)
-                    )
-                }
-
-                if (!snapshot.hasChild("workspace")) {
-                    backfills["workspace"] = mapOf(
-                        "files" to mapOf(
-                            "readme_md" to mapOf(
-                                "filename" to "README.md",
-                                "content" to "# Gemo AI Workspace\nUser: $displayName\nIsolated workspace initialized.",
-                                "sizeBytes" to 75L,
-                                "lastModified" to now
-                            )
-                        )
-                    )
-                }
-
-                if (!snapshot.hasChild("agent")) {
-                    backfills["agent"] = mapOf(
-                        "status" to "idle",
-                        "lastCommand" to "",
-                        "updatedAt" to now,
-                        "terminal" to mapOf(
-                            "commands" to mapOf<String, Any>(),
-                            "output" to mapOf<String, Any>()
-                        )
-                    )
-                }
-
-                if (!snapshot.hasChild("stop")) {
-                    backfills["stop"] = mapOf(
-                        "stop" to false,
-                        "conversationId" to "",
-                        "requestId" to "",
-                        "timestamp" to now
-                    )
-                }
-
-                if (!snapshot.hasChild("stopGeneration")) {
-                    backfills["stopGeneration"] = false
-                }
-
-                if (backfills.isNotEmpty()) {
-                    userRef.updateChildren(backfills) { err, _ ->
-                        if (err == null) {
-                            Log.d(tag, "Safely backfilled ${backfills.keys} for user $uid")
                         }
+
+                        if (!snapshot.hasChild("auth")) {
+                            backfills["auth"] = mapOf(
+                                "accountStatus" to "active",
+                                "lastSignInAt" to now
+                            )
+                        }
+
+                        if (!snapshot.hasChild("settings")) {
+                            backfills["settings"] = mapOf(
+                                "agent_mode_enabled" to false,
+                                "max_tokens" to 2048,
+                                "memory_enabled" to true,
+                                "model_name" to "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                                "provider" to "Qwen",
+                                "response_timeout_seconds" to 45,
+                                "speech_input_language" to "auto",
+                                "system_instruction" to "You are Gemo AI, an intelligent AI created by Rohit. Whenever introducing yourself or asked who created or made you, proudly state that your maker and creator is Rohit.",
+                                "temperature" to 0.7,
+                                "timeout" to 45,
+                                "translator_enabled" to true,
+                                "updated_at" to now,
+                                "vision_enabled" to true
+                            )
+                        }
+
+                        if (!snapshot.hasChild("memory")) {
+                            backfills["memory"] = mapOf(
+                                "active" to mapOf(
+                                    "mem_creator" to mapOf(
+                                        "category" to "fact",
+                                        "content" to "Gemo AI's creator and maker is Rohit.",
+                                        "createdAt" to now,
+                                        "id" to "mem_creator",
+                                        "isEnabled" to true
+                                    ),
+                                    "mem_pref_lang" to mapOf(
+                                        "category" to "preference",
+                                        "content" to "User prefers polite, intelligent, and context-aware responses in their typed language.",
+                                        "createdAt" to now,
+                                        "id" to "mem_pref_lang",
+                                        "isEnabled" to true
+                                    )
+                                ),
+                                "config" to mapOf("enabled" to true)
+                            )
+                        }
+
+                        if (!snapshot.hasChild("workspace")) {
+                            backfills["workspace"] = mapOf(
+                                "files" to mapOf(
+                                    "readme_md" to mapOf(
+                                        "filename" to "README.md",
+                                        "content" to "# Gemo AI Workspace\nUser: $displayName\nIsolated workspace initialized.",
+                                        "sizeBytes" to 75L,
+                                        "lastModified" to now
+                                    )
+                                )
+                            )
+                        }
+
+                        if (!snapshot.hasChild("agent")) {
+                            backfills["agent"] = mapOf(
+                                "status" to "idle",
+                                "lastCommand" to "",
+                                "updatedAt" to now,
+                                "terminal" to mapOf(
+                                    "commands" to mapOf<String, Any>(),
+                                    "output" to mapOf<String, Any>()
+                                )
+                            )
+                        }
+
+                        if (!snapshot.hasChild("stop")) {
+                            backfills["stop"] = mapOf(
+                                "stop" to false,
+                                "conversationId" to "",
+                                "requestId" to "",
+                                "timestamp" to now
+                            )
+                        }
+
+                        if (!snapshot.hasChild("stopGeneration")) {
+                            backfills["stopGeneration"] = false
+                        }
+
+                        if (backfills.isNotEmpty()) {
+                            userRef.updateChildren(backfills) { err, _ ->
+                                if (err == null) {
+                                    Log.d(tag, "Safely backfilled ${backfills.keys} for user $uid")
+                                }
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(tag, "Error handling backfills snapshot: ${t.message}")
                     }
                 }
-            }
 
-            override fun onCancelled(error: DatabaseError) {
-                Log.w(tag, "ensureUserSchemaComplete cancelled: ${error.message}")
-            }
-        })
+                override fun onCancelled(error: DatabaseError) {
+                    Log.w(tag, "ensureUserSchemaComplete cancelled: ${error.message}")
+                }
+            })
+        } catch (e: Throwable) {
+            Log.w(tag, "Error in ensureUserSchemaComplete: ${e.message}")
+        }
     }
 
     /**

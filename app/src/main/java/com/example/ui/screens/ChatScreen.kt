@@ -343,6 +343,7 @@ fun ChatScreen(
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
+                        val safeMessages = visibleMessages.filter { it.messageId.isNotBlank() }.distinctBy { it.messageId }
                         LazyColumn(
                             state = listState,
                             modifier = Modifier
@@ -350,7 +351,7 @@ fun ChatScreen(
                                 .testTag("messages_lazy_column"),
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp)
                         ) {
-                            items(visibleMessages, key = { it.messageId }) { msg ->
+                            items(safeMessages, key = { it.messageId }) { msg ->
                                 MessageItem(
                                     message = msg,
                                     onRetry = { viewModel.retryMessage(msg) },

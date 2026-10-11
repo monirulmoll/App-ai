@@ -124,7 +124,7 @@ fun EmptyChatWelcome(
         Spacer(modifier = Modifier.height(18.dp))
 
         Text(
-            text = "Welcome to Gemo AI",
+            text = "Start chatting",
             style = MaterialTheme.typography.headlineMedium.copy(
                 fontWeight = FontWeight.Bold,
                 fontSize = 26.sp
@@ -136,7 +136,7 @@ fun EmptyChatWelcome(
         Spacer(modifier = Modifier.height(6.dp))
 
         Text(
-            text = "Created by Rohit • Next-Gen AI Assistant Platform",
+            text = "Ask Gemo AI anything or choose a prompt to begin",
             style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
             color = GeminiBlue,
             fontWeight = FontWeight.SemiBold,

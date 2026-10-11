@@ -377,36 +377,102 @@ fun HomeScreen(
             }
 
             // Recent Conversations Header
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Recent Conversations",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                    Text(
-                        text = "See All",
-                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = GeminiBlue,
-                        modifier = Modifier.clickable { onNavigate(AppScreen.CONVERSATIONS) }
-                    )
-                }
-            }
-
-            // Recent Conversations Items (top 4)
-            val recentList = conversations.take(4)
-            if (recentList.isEmpty()) {
+            // If no chats exist: show clean 'Start chatting' card until user starts a chat
+            if (conversations.isEmpty()) {
                 item {
-                    Text(
-                        text = "No recent chats yet. Start a new conversation above!",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(
+                                width = 1.2.dp,
+                                brush = Brush.horizontalGradient(
+                                    listOf(GeminiCyan, GeminiBlue, GeminiPurple)
+                                ),
+                                shape = RoundedCornerShape(18.dp)
+                            )
+                            .clickable {
+                                onNavigate(AppScreen.CHAT)
+                            }
+                            .testTag("start_chatting_card"),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        ),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(18.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(GeminiBlue, GeminiCyan)
+                                        )
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Chat,
+                                    contentDescription = "Start chatting",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Start chatting",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 17.sp
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Tap here to start a new chat with Gemo AI",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = GeminiCyan,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
                 }
             } else {
+                // Recent Conversations Header (only visible when chats exist)
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Recent Conversations",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Text(
+                            text = "See All",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = GeminiBlue,
+                            modifier = Modifier.clickable { onNavigate(AppScreen.CONVERSATIONS) }
+                        )
+                    }
+                }
+
+                // Recent Conversations Items (top 4, strictly unique keys)
+                val recentList = conversations.filter { it.id.isNotBlank() }.distinctBy { it.id }.take(4)
                 items(recentList, key = { it.id }) { conv ->
                     Card(
                         modifier = Modifier

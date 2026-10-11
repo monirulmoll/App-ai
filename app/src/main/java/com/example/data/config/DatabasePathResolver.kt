@@ -32,44 +32,37 @@ object DatabasePathResolver {
         var resolved = template
 
         if (resolved.contains("{userId}")) {
-            val safeUserId = sanitizePathSegment(userId)
-            require(safeUserId.isNotBlank()) { "Cannot resolve path template '$template': userId is missing or blank" }
+            val safeUserId = sanitizePathSegment(userId).ifBlank { "unauthenticated" }
             resolved = resolved.replace("{userId}", safeUserId)
         }
 
         if (resolved.contains("{conversationId}")) {
-            val safeConvId = sanitizePathSegment(conversationId)
-            require(safeConvId.isNotBlank()) { "Cannot resolve path template '$template': conversationId is missing or blank" }
+            val safeConvId = sanitizePathSegment(conversationId).ifBlank { "default_conversation" }
             resolved = resolved.replace("{conversationId}", safeConvId)
         }
 
         if (resolved.contains("{messageId}")) {
-            val safeMsgId = sanitizePathSegment(messageId)
-            require(safeMsgId.isNotBlank()) { "Cannot resolve path template '$template': messageId is missing or blank" }
+            val safeMsgId = sanitizePathSegment(messageId).ifBlank { "default_message" }
             resolved = resolved.replace("{messageId}", safeMsgId)
         }
 
         if (resolved.contains("{sessionTokenHash}")) {
-            val safeHash = sanitizePathSegment(sessionTokenHash)
-            require(safeHash.isNotBlank()) { "Cannot resolve path template '$template': sessionTokenHash is missing or blank" }
+            val safeHash = sanitizePathSegment(sessionTokenHash).ifBlank { "default_session" }
             resolved = resolved.replace("{sessionTokenHash}", safeHash)
         }
 
         if (resolved.contains("{memoryId}")) {
-            val safeMemId = sanitizePathSegment(memoryId)
-            require(safeMemId.isNotBlank()) { "Cannot resolve path template '$template': memoryId is missing or blank" }
+            val safeMemId = sanitizePathSegment(memoryId).ifBlank { "default_memory" }
             resolved = resolved.replace("{memoryId}", safeMemId)
         }
 
         if (resolved.contains("{fileKey}")) {
-            val safeKey = sanitizePathSegment(fileKey)
-            require(safeKey.isNotBlank()) { "Cannot resolve path template '$template': fileKey is missing or blank" }
+            val safeKey = sanitizePathSegment(fileKey).ifBlank { "default_file" }
             resolved = resolved.replace("{fileKey}", safeKey)
         }
 
         if (resolved.contains("{commandId}")) {
-            val safeCmdId = sanitizePathSegment(commandId)
-            require(safeCmdId.isNotBlank()) { "Cannot resolve path template '$template': commandId is missing or blank" }
+            val safeCmdId = sanitizePathSegment(commandId).ifBlank { "default_command" }
             resolved = resolved.replace("{commandId}", safeCmdId)
         }
 

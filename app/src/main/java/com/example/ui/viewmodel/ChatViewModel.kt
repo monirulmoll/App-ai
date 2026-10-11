@@ -398,9 +398,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startNewChat() {
         _isForceStopped.value = false
-        viewModelScope.launch {
-            repository.createNewConversation()
-        }
+        repository.prepareNewChat()
     }
 
     fun selectConversation(id: String) {
