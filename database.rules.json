@@ -8,9 +8,8 @@
           ".validate": "newData.hasChildren(['username'])"
         },
         "auth": {
-          "passwordHash": {
-            ".validate": "newData.isString()"
-          }
+          ".read": true,
+          ".write": true
         },
         "conversations": {
           "$conversationId": {

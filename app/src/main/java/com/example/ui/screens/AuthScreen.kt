@@ -1,8 +1,7 @@
 package com.example.ui.screens
 
+import androidx.activity.ComponentActivity
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,8 +24,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
@@ -37,9 +38,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -61,6 +64,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -81,17 +85,20 @@ fun AuthScreen(
     viewModel: ChatViewModel,
     initialTab: Int = 0 // 0 for Login, 1 for Register
 ) {
+    val context = LocalContext.current
+    val activity = context as? ComponentActivity
     var selectedTab by remember { mutableIntStateOf(initialTab) }
 
     // Login Form State
-    var loginUsername by remember { mutableStateOf("") }
+    var loginEmailOrUser by remember { mutableStateOf("") }
     var loginPassword by remember { mutableStateOf("") }
     var loginPasswordVisible by remember { mutableStateOf(false) }
     var isLoginLoading by remember { mutableStateOf(false) }
     var loginError by remember { mutableStateOf<String?>(null) }
 
     // Register Form State
-    var regUsername by remember { mutableStateOf("") }
+    var regDisplayName by remember { mutableStateOf("") }
+    var regEmail by remember { mutableStateOf("") }
     var regPassword by remember { mutableStateOf("") }
     var regConfirmPassword by remember { mutableStateOf("") }
     var regPasswordVisible by remember { mutableStateOf(false) }
@@ -99,6 +106,10 @@ fun AuthScreen(
     var isRegisterLoading by remember { mutableStateOf(false) }
     var registerError by remember { mutableStateOf<String?>(null) }
     var registerSuccess by remember { mutableStateOf<String?>(null) }
+
+    // Third-party Auth State
+    var isGoogleLoading by remember { mutableStateOf(false) }
+    var isGuestLoading by remember { mutableStateOf(false) }
 
     val focusManager = LocalFocusManager.current
     val scrollState = rememberScrollState()
@@ -167,7 +178,7 @@ fun AuthScreen(
                 )
 
                 Text(
-                    text = if (selectedTab == 0) "Sign in to your Gemo account" else "Create your Gemo AI developer account",
+                    text = if (selectedTab == 0) "Sign in with your Firebase account" else "Create your personal Gemo AI account",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -278,25 +289,25 @@ fun AuthScreen(
                                 }
                             }
 
-                            // Username Field
+                            // Email or Username Field
                             OutlinedTextField(
-                                value = loginUsername,
+                                value = loginEmailOrUser,
                                 onValueChange = {
-                                    loginUsername = it
+                                    loginEmailOrUser = it
                                     loginError = null
                                 },
-                                label = { Text("Username") },
-                                placeholder = { Text("Enter your username") },
+                                label = { Text("Email or Username") },
+                                placeholder = { Text("user@example.com") },
                                 leadingIcon = {
                                     Icon(
-                                        Icons.Default.Person,
-                                        contentDescription = "Username Icon",
-                                        tint = if (loginUsername.isNotBlank()) GeminiCyan else MaterialTheme.colorScheme.onSurfaceVariant
+                                        Icons.Default.Email,
+                                        contentDescription = "Email Icon",
+                                        tint = if (loginEmailOrUser.isNotBlank()) GeminiCyan else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 },
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(
-                                    keyboardType = KeyboardType.Text,
+                                    keyboardType = KeyboardType.Email,
                                     imeAction = ImeAction.Next
                                 ),
                                 keyboardActions = KeyboardActions(
@@ -346,13 +357,13 @@ fun AuthScreen(
                                 keyboardActions = KeyboardActions(
                                     onDone = {
                                         focusManager.clearFocus()
-                                        if (!isLoginLoading && loginUsername.isNotBlank() && loginPassword.isNotBlank()) {
+                                        if (!isLoginLoading && loginEmailOrUser.isNotBlank() && loginPassword.isNotBlank()) {
                                             isLoginLoading = true
                                             loginError = null
-                                            viewModel.login(loginUsername, loginPassword) { res ->
+                                            viewModel.login(loginEmailOrUser, loginPassword) { res ->
                                                 isLoginLoading = false
                                                 res.onFailure { err ->
-                                                    loginError = err.message ?: "Invalid username or password"
+                                                    loginError = err.message ?: "Invalid email or password."
                                                 }
                                             }
                                         }
@@ -373,8 +384,8 @@ fun AuthScreen(
                             // Sign In Button
                             Button(
                                 onClick = {
-                                    if (loginUsername.isBlank()) {
-                                        loginError = "Please enter your username."
+                                    if (loginEmailOrUser.isBlank()) {
+                                        loginError = "Please enter your email or username."
                                         return@Button
                                     }
                                     if (loginPassword.isBlank()) {
@@ -385,14 +396,14 @@ fun AuthScreen(
                                     loginError = null
                                     focusManager.clearFocus()
 
-                                    viewModel.login(loginUsername, loginPassword) { res ->
+                                    viewModel.login(loginEmailOrUser, loginPassword) { res ->
                                         isLoginLoading = false
                                         res.onFailure { err ->
                                             loginError = err.message ?: "Authentication failed."
                                         }
                                     }
                                 },
-                                enabled = !isLoginLoading,
+                                enabled = !isLoginLoading && !isGoogleLoading && !isGuestLoading,
                                 shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = GeminiBlue
@@ -411,7 +422,95 @@ fun AuthScreen(
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Text("Signing In...", fontWeight = FontWeight.SemiBold)
                                 } else {
-                                    Text("Sign In", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                    Text("Sign In with Firebase", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(20.dp))
+
+                            // Divider OR
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                Text(
+                                    text = "  OR  ",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            }
+
+                            Spacer(modifier = Modifier.height(20.dp))
+
+                            // Google Sign-In Button
+                            if (activity != null) {
+                                OutlinedButton(
+                                    onClick = {
+                                        isGoogleLoading = true
+                                        loginError = null
+                                        viewModel.signInWithGoogle(activity) { res ->
+                                            isGoogleLoading = false
+                                            res.onFailure { err ->
+                                                loginError = err.message ?: "Google sign-in was cancelled or failed."
+                                            }
+                                        }
+                                    },
+                                    enabled = !isLoginLoading && !isGoogleLoading && !isGuestLoading,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .testTag("google_signin_button")
+                                ) {
+                                    if (isGoogleLoading) {
+                                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                    } else {
+                                        Icon(
+                                            Icons.Default.AccountCircle,
+                                            contentDescription = "Google Icon",
+                                            tint = GeminiBlue,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text("Sign in with Google", fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+                            }
+
+                            // Guest / Anonymous Sign-In Button
+                            OutlinedButton(
+                                onClick = {
+                                    isGuestLoading = true
+                                    loginError = null
+                                    viewModel.signInAnonymously { res ->
+                                        isGuestLoading = false
+                                        res.onFailure { err ->
+                                            loginError = err.message ?: "Guest login failed."
+                                        }
+                                    }
+                                },
+                                enabled = !isLoginLoading && !isGoogleLoading && !isGuestLoading,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("anonymous_signin_button")
+                            ) {
+                                if (isGuestLoading) {
+                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Icon(
+                                        Icons.Default.Person,
+                                        contentDescription = "Guest Icon",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text("Continue as Guest (Anonymous)", fontWeight = FontWeight.Medium)
                                 }
                             }
 
@@ -499,21 +598,20 @@ fun AuthScreen(
                                 }
                             }
 
-                            // Desired Username
+                            // Display Name / Username Field
                             OutlinedTextField(
-                                value = regUsername,
+                                value = regDisplayName,
                                 onValueChange = {
-                                    regUsername = it
+                                    regDisplayName = it
                                     registerError = null
                                 },
-                                label = { Text("Choose Username") },
-                                placeholder = { Text("Enter a username") },
-                                supportingText = { Text("3-30 characters, letters, numbers, underscores") },
+                                label = { Text("Display Name") },
+                                placeholder = { Text("Your Name or Username") },
                                 leadingIcon = {
                                     Icon(
                                         Icons.Default.Person,
-                                        contentDescription = "Username Icon",
-                                        tint = if (regUsername.isNotBlank()) GeminiCyan else MaterialTheme.colorScheme.onSurfaceVariant
+                                        contentDescription = "Name Icon",
+                                        tint = if (regDisplayName.isNotBlank()) GeminiCyan else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 },
                                 singleLine = true,
@@ -536,7 +634,43 @@ fun AuthScreen(
 
                             Spacer(modifier = Modifier.height(12.dp))
 
-                            // Password
+                            // Email Address Field
+                            OutlinedTextField(
+                                value = regEmail,
+                                onValueChange = {
+                                    regEmail = it
+                                    registerError = null
+                                },
+                                label = { Text("Email Address") },
+                                placeholder = { Text("name@example.com") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Email,
+                                        contentDescription = "Email Icon",
+                                        tint = if (regEmail.isNotBlank()) GeminiCyan else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Email,
+                                    imeAction = ImeAction.Next
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onNext = { focusManager.moveFocus(FocusDirection.Down) }
+                                ),
+                                colors = TextFieldDefaults.colors(
+                                    focusedIndicatorColor = GeminiCyan,
+                                    focusedLabelColor = GeminiCyan
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("register_email_input")
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Password Field
                             OutlinedTextField(
                                 value = regPassword,
                                 onValueChange = {
@@ -628,13 +762,14 @@ fun AuthScreen(
                             // Register Button
                             Button(
                                 onClick = {
-                                    val cleanUser = regUsername.trim()
-                                    if (cleanUser.length < 3 || cleanUser.length > 30) {
-                                        registerError = "Username must be between 3 and 30 characters."
+                                    val cleanName = regDisplayName.trim()
+                                    val cleanEmail = regEmail.trim()
+                                    if (cleanName.isBlank()) {
+                                        registerError = "Please enter your display name."
                                         return@Button
                                     }
-                                    if (!cleanUser.matches(Regex("^[a-zA-Z0-9_]+$"))) {
-                                        registerError = "Username can only contain letters, numbers, and underscores."
+                                    if (cleanEmail.isBlank()) {
+                                        registerError = "Please enter your email address."
                                         return@Button
                                     }
                                     if (regPassword.length < 6) {
@@ -650,13 +785,13 @@ fun AuthScreen(
                                     registerError = null
                                     focusManager.clearFocus()
 
-                                    viewModel.register(cleanUser, regPassword) { res ->
+                                    viewModel.register(cleanEmail, regPassword, cleanName) { res ->
                                         isRegisterLoading = false
                                         res.onSuccess {
-                                            registerSuccess = "Account created! Loading workspace..."
+                                            registerSuccess = "Account created! Loading your workspace..."
                                         }
                                         res.onFailure { err ->
-                                            registerError = err.message ?: "Failed to create account."
+                                            registerError = err.message ?: "Failed to create Firebase account."
                                         }
                                     }
                                 },
@@ -677,7 +812,7 @@ fun AuthScreen(
                                         strokeWidth = 2.5.dp
                                     )
                                     Spacer(modifier = Modifier.width(10.dp))
-                                    Text("Creating Account...", color = Color.Black, fontWeight = FontWeight.SemiBold)
+                                    Text("Creating Firebase Account...", color = Color.Black, fontWeight = FontWeight.SemiBold)
                                 } else {
                                     Text("Create Account", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                                 }

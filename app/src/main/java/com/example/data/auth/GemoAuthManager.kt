@@ -5,6 +5,10 @@ import android.util.Log
 import com.example.data.local.LocalChatPreferences
 import com.example.data.model.AuthSession
 import com.example.data.model.UserProfile
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.GoogleAuthProvider
+import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
@@ -15,65 +19,30 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import java.security.MessageDigest
-import java.security.SecureRandom
 import java.util.UUID
-import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.PBEKeySpec
 import kotlin.coroutines.resume
 
-object PasswordHasher {
-    private const val ITERATIONS = 600000
-    private const val KEY_LENGTH = 256 // 32 bytes
-
-    fun hashPassword(password: String): String {
-        val random = SecureRandom()
-        val saltBytes = ByteArray(16)
-        random.nextBytes(saltBytes)
-        val saltHex = saltBytes.joinToString("") { "%02x".format(it) }
-
-        val spec = PBEKeySpec(password.toCharArray(), saltHex.toByteArray(Charsets.UTF_8), ITERATIONS, KEY_LENGTH)
-        val skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        val hashBytes = skf.generateSecret(spec).encoded
-        val hashHex = hashBytes.joinToString("") { "%02x".format(it) }
-
-        return "pbkdf2:sha256:$ITERATIONS\$$saltHex\$$hashHex"
-    }
-
-    fun verifyPassword(password: String, storedHash: String): Boolean {
-        if (!storedHash.startsWith("pbkdf2:sha256:")) return false
-        val parts = storedHash.split("$")
-        if (parts.size != 3) return false
-        val iterations = parts[0].removePrefix("pbkdf2:sha256:").toIntOrNull() ?: return false
-        val saltHex = parts[1]
-        val expectedHashHex = parts[2]
-
-        val spec = PBEKeySpec(password.toCharArray(), saltHex.toByteArray(Charsets.UTF_8), iterations, KEY_LENGTH)
-        val skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        val hashBytes = skf.generateSecret(spec).encoded
-        val computedHex = hashBytes.joinToString("") { "%02x".format(it) }
-
-        return MessageDigest.isEqual(computedHex.toByteArray(Charsets.UTF_8), expectedHashHex.toByteArray(Charsets.UTF_8))
-    }
-
-    fun sha256Hex(input: String): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        val bytes = md.digest(input.toByteArray(Charsets.UTF_8))
-        return bytes.joinToString("") { "%02x".format(it) }
-    }
-}
-
+/**
+ * Enterprise Firebase Authentication Manager.
+ * Handles Native Firebase Auth (Email/Password, Google Sign-In, Anonymous Guest)
+ * and ensures strict per-user schema cloning under /users/{uid}/ with zero data leakage.
+ */
 class GemoAuthManager(private val context: Context) {
     private val tag = "GemoAuthManager"
     private val prefs = LocalChatPreferences(context)
+    private val firebaseAuth: FirebaseAuth = FirebaseAuth.getInstance()
 
-    private val _currentSession = MutableStateFlow<AuthSession?>(prefs.getAuthSession())
+    private val _currentSession = MutableStateFlow<AuthSession?>(loadInitialSession())
     val currentSession: StateFlow<AuthSession?> = _currentSession.asStateFlow()
 
-    private val _currentUserProfile = MutableStateFlow<UserProfile?>(prefs.getUserProfile())
+    private val _currentUserProfile = MutableStateFlow<UserProfile?>(loadInitialProfile())
     val currentUserProfile: StateFlow<UserProfile?> = _currentUserProfile.asStateFlow()
 
-    val isLoggedIn: Boolean get() = _currentSession.value != null && !_currentSession.value!!.isExpired
+    val isLoggedIn: Boolean
+        get() = firebaseAuth.currentUser != null || (_currentSession.value != null && !_currentSession.value!!.isExpired)
+
+    val currentFirebaseUser: FirebaseUser?
+        get() = firebaseAuth.currentUser
 
     private val database: FirebaseDatabase by lazy {
         val settings = prefs.getSettings()
@@ -84,208 +53,400 @@ class GemoAuthManager(private val context: Context) {
         }
     }
 
+    init {
+        firebaseAuth.addAuthStateListener { auth ->
+            val user = auth.currentUser
+            if (user != null) {
+                val displayName = user.displayName?.ifBlank { null }
+                    ?: user.email?.substringBefore('@')
+                    ?: if (user.isAnonymous) "Guest User" else "User"
+                val session = AuthSession(
+                    sessionToken = user.uid,
+                    userId = user.uid,
+                    username = displayName,
+                    email = user.email,
+                    isAnonymous = user.isAnonymous,
+                    providerId = user.providerData.firstOrNull()?.providerId ?: if (user.isAnonymous) "anonymous" else "password",
+                    expiresAt = System.currentTimeMillis() + (30L * 24 * 60 * 60 * 1000L)
+                )
+                _currentSession.value = session
+                _currentUserProfile.value = UserProfile(
+                    userId = user.uid,
+                    username = displayName,
+                    email = user.email,
+                    isAnonymous = user.isAnonymous,
+                    providerId = session.providerId,
+                    sessionToken = user.uid
+                )
+                prefs.saveAuthSession(session)
+            } else {
+                val cached = prefs.getAuthSession()
+                if (cached != null && cached.sessionToken.isNotBlank()) {
+                    // Do not wipe cached session immediately if offline
+                } else {
+                    _currentSession.value = null
+                    _currentUserProfile.value = null
+                }
+            }
+        }
+    }
+
+    private fun loadInitialSession(): AuthSession? {
+        val user = firebaseAuth.currentUser
+        if (user != null) {
+            val name = user.displayName?.ifBlank { null } ?: user.email?.substringBefore('@') ?: if (user.isAnonymous) "Guest User" else "User"
+            return AuthSession(
+                sessionToken = user.uid,
+                userId = user.uid,
+                username = name,
+                email = user.email,
+                isAnonymous = user.isAnonymous,
+                providerId = user.providerData.firstOrNull()?.providerId ?: if (user.isAnonymous) "anonymous" else "password"
+            )
+        }
+        return prefs.getAuthSession()
+    }
+
+    private fun loadInitialProfile(): UserProfile? {
+        val user = firebaseAuth.currentUser
+        if (user != null) {
+            val name = user.displayName?.ifBlank { null } ?: user.email?.substringBefore('@') ?: if (user.isAnonymous) "Guest User" else "User"
+            return UserProfile(
+                userId = user.uid,
+                username = name,
+                email = user.email,
+                isAnonymous = user.isAnonymous,
+                providerId = user.providerData.firstOrNull()?.providerId ?: if (user.isAnonymous) "anonymous" else "password",
+                sessionToken = user.uid
+            )
+        }
+        return prefs.getUserProfile()
+    }
+
     /**
-     * Registers a new user directly under /users/{canonicalUsername}/.
-     * Guaranteed case-insensitive validation and single-root architecture.
+     * Resolves an email address from either an explicit email or a username.
+     */
+    private fun resolveEmail(input: String): String {
+        val trimmed = input.trim()
+        return if (trimmed.contains("@")) {
+            trimmed
+        } else {
+            "${trimmed.lowercase().replace(" ", "_")}@gemo.app"
+        }
+    }
+
+    /**
+     * Registers a new user with Firebase Authentication (Email/Password).
      */
     suspend fun register(
-        username: String,
-        password: String
+        emailOrUsername: String,
+        password: String,
+        desiredUsername: String? = null
     ): Result<AuthSession> = withContext(Dispatchers.IO) {
-        val cleanUsername = username.trim()
-        val canonical = cleanUsername.lowercase()
-        if (cleanUsername.length < 3 || cleanUsername.length > 30) {
-            return@withContext Result.failure(IllegalArgumentException("Username must be between 3 and 30 characters."))
-        }
-        if (!cleanUsername.matches(Regex("^[a-zA-Z0-9_]+$"))) {
-            return@withContext Result.failure(IllegalArgumentException("Username can only contain letters, numbers, and underscores."))
+        val cleanInput = emailOrUsername.trim()
+        if (cleanInput.length < 3) {
+            return@withContext Result.failure(IllegalArgumentException("Email or username must be at least 3 characters."))
         }
         if (password.length < 6) {
             return@withContext Result.failure(IllegalArgumentException("Password must be at least 6 characters long."))
         }
 
-        val userRef = database.getReference("users").child(canonical)
+        val effectiveEmail = resolveEmail(cleanInput)
+        val displayName = (desiredUsername?.trim()?.ifBlank { null })
+            ?: (if (cleanInput.contains("@")) cleanInput.substringBefore('@') else cleanInput)
 
-        // 1. Check if user already exists
-        val exists = suspendCancellableCoroutine<Boolean> { cont ->
-            userRef.addListenerForSingleValueEvent(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    val hasAuth = snapshot.child("auth").hasChild("passwordHash")
-                    val hasProfile = snapshot.hasChild("profile")
-                    if (cont.isActive) cont.resume(hasAuth || hasProfile)
+        val authResult = suspendCancellableCoroutine<Result<FirebaseUser>> { cont ->
+            firebaseAuth.createUserWithEmailAndPassword(effectiveEmail, password)
+                .addOnSuccessListener { result ->
+                    val user = result.user
+                    if (user != null) {
+                        // Set display name in Firebase Auth
+                        val profileUpdate = UserProfileChangeRequest.Builder()
+                            .setDisplayName(displayName)
+                            .build()
+                        user.updateProfile(profileUpdate).addOnCompleteListener {
+                            if (cont.isActive) cont.resume(Result.success(user))
+                        }
+                    } else {
+                        if (cont.isActive) cont.resume(Result.failure(Exception("Created user is null.")))
+                    }
                 }
-
-                override fun onCancelled(error: DatabaseError) {
-                    if (cont.isActive) cont.resume(false)
+                .addOnFailureListener { ex ->
+                    Log.e(tag, "Firebase Auth createUser failed: ${ex.message}")
+                    if (cont.isActive) cont.resume(Result.failure(ex))
                 }
-            })
         }
 
-        if (exists) {
-            return@withContext Result.failure(Exception("Username is already taken. Please choose another."))
+        if (authResult.isFailure) {
+            return@withContext Result.failure(authResult.exceptionOrNull() ?: Exception("Registration failed."))
         }
 
-        // 2. Create user record directly under /users/{canonical}/
+        val user = authResult.getOrThrow()
+        val uid = user.uid
         val now = System.currentTimeMillis()
-        val expiry = now + (30L * 24 * 60 * 60 * 1000L) // 30 days
-        val passwordHash = PasswordHasher.hashPassword(password)
-        val sessionToken = "S_" + UUID.randomUUID().toString().replace("-", "") + "_" + UUID.randomUUID().toString().replace("-", "")
-        val sessionTokenHash = PasswordHasher.sha256Hex(sessionToken)
+        val expiry = now + (30L * 24 * 60 * 60 * 1000L)
 
-        // Complete account initialization cloning reference schema structure & defaults
-        val writeSuccess = initializeNewUserAccount(
-            cleanUsername = cleanUsername,
-            canonical = canonical,
-            passwordHash = passwordHash,
-            sessionTokenHash = sessionTokenHash,
-            expiry = expiry,
+        // Initialize complete canonical schema under /users/{uid}/
+        initializeNewUserAccount(
+            uid = uid,
+            displayName = displayName,
+            email = effectiveEmail,
+            isAnonymous = false,
+            providerId = "password",
             now = now
         )
 
-        if (!writeSuccess) {
-            return@withContext Result.failure(Exception("Failed to create account. Please check your internet connection."))
-        }
-
         val session = AuthSession(
-            sessionToken = sessionToken,
-            userId = canonical,
-            username = cleanUsername,
+            sessionToken = uid,
+            userId = uid,
+            username = displayName,
+            email = effectiveEmail,
+            isAnonymous = false,
+            providerId = "password",
             expiresAt = expiry
         )
 
         prefs.saveAuthSession(session)
         _currentSession.value = session
         _currentUserProfile.value = UserProfile(
-            userId = canonical,
-            username = cleanUsername,
-            sessionToken = sessionToken
+            userId = uid,
+            username = displayName,
+            email = effectiveEmail,
+            isAnonymous = false,
+            providerId = "password",
+            sessionToken = uid
         )
-        Log.i(tag, "Successfully registered user '$cleanUsername' under /users/$canonical/")
+
+        Log.i(tag, "Successfully created Firebase Auth account for '$displayName' (uid=$uid)")
         Result.success(session)
     }
 
     /**
-     * Authenticates an existing user directly from /users/{canonicalUsername}/.
+     * Authenticates an existing user via Firebase Authentication (Email/Password).
      */
     suspend fun login(
-        username: String,
+        emailOrUsername: String,
         password: String
     ): Result<AuthSession> = withContext(Dispatchers.IO) {
-        val cleanUsername = username.trim()
-        val canonical = cleanUsername.lowercase()
-        if (cleanUsername.isBlank()) {
-            return@withContext Result.failure(IllegalArgumentException("Please enter your username."))
+        val cleanInput = emailOrUsername.trim()
+        if (cleanInput.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("Please enter your email or username."))
         }
         if (password.isBlank()) {
             return@withContext Result.failure(IllegalArgumentException("Please enter your password."))
         }
 
-        val userRef = database.getReference("users").child(canonical)
+        val effectiveEmail = resolveEmail(cleanInput)
 
-        val userSnapshot = suspendCancellableCoroutine<DataSnapshot?> { cont ->
-            userRef.addListenerForSingleValueEvent(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    if (cont.isActive) cont.resume(snapshot)
+        val authResult = suspendCancellableCoroutine<Result<FirebaseUser>> { cont ->
+            firebaseAuth.signInWithEmailAndPassword(effectiveEmail, password)
+                .addOnSuccessListener { result ->
+                    val user = result.user
+                    if (user != null) {
+                        if (cont.isActive) cont.resume(Result.success(user))
+                    } else {
+                        if (cont.isActive) cont.resume(Result.failure(Exception("Signed-in user is null.")))
+                    }
                 }
-
-                override fun onCancelled(error: DatabaseError) {
-                    Log.e(tag, "Login query error: ${error.message}")
-                    if (cont.isActive) cont.resume(null)
+                .addOnFailureListener { ex ->
+                    Log.e(tag, "Firebase Auth signIn failed: ${ex.message}")
+                    if (cont.isActive) cont.resume(Result.failure(ex))
                 }
-            })
         }
 
-        if (userSnapshot == null || !userSnapshot.exists()) {
-            return@withContext Result.failure(Exception("Invalid username or password."))
+        if (authResult.isFailure) {
+            return@withContext Result.failure(authResult.exceptionOrNull() ?: Exception("Invalid credentials."))
         }
 
-        val authSnap = userSnapshot.child("auth")
-        val passwordHash = authSnap.child("passwordHash").getValue(String::class.java)
-        if (passwordHash.isNullOrBlank()) {
-            return@withContext Result.failure(Exception("Invalid username or password."))
-        }
-
-        val accountStatus = authSnap.child("accountStatus").getValue(String::class.java) ?: "active"
-        if (accountStatus == "suspended") {
-            return@withContext Result.failure(Exception("Account is suspended. Please contact administrator."))
-        }
-
-        val valid = PasswordHasher.verifyPassword(password, passwordHash)
-        if (!valid) {
-            return@withContext Result.failure(Exception("Invalid username or password."))
-        }
-
-        val displayUsername = userSnapshot.child("profile").child("username").getValue(String::class.java)
-            ?.ifBlank { null } ?: cleanUsername
-
+        val user = authResult.getOrThrow()
+        val uid = user.uid
+        val displayName = user.displayName?.ifBlank { null }
+            ?: user.email?.substringBefore('@')
+            ?: if (cleanInput.contains("@")) cleanInput.substringBefore('@') else cleanInput
         val now = System.currentTimeMillis()
-        val expiry = now + (30L * 24 * 60 * 60 * 1000L) // 30 days
-        val sessionToken = "S_" + UUID.randomUUID().toString().replace("-", "") + "_" + UUID.randomUUID().toString().replace("-", "")
-        val sessionTokenHash = PasswordHasher.sha256Hex(sessionToken)
+        val expiry = now + (30L * 24 * 60 * 60 * 1000L)
 
-        val sessionPayload = mapOf(
-            "sessionTokenHash" to sessionTokenHash,
-            "createdAt" to now,
-            "expiresAt" to expiry,
-            "revoked" to false
-        )
-
-        userRef.child("auth").child("sessions").child(sessionTokenHash).setValue(sessionPayload)
+        ensureUserSchemaComplete(uid = uid, displayName = displayName, email = user.email)
 
         val session = AuthSession(
-            sessionToken = sessionToken,
-            userId = canonical,
-            username = displayUsername,
+            sessionToken = uid,
+            userId = uid,
+            username = displayName,
+            email = user.email ?: effectiveEmail,
+            isAnonymous = false,
+            providerId = "password",
             expiresAt = expiry
         )
 
         prefs.saveAuthSession(session)
         _currentSession.value = session
         _currentUserProfile.value = UserProfile(
-            userId = canonical,
-            username = displayUsername,
-            sessionToken = sessionToken
+            userId = uid,
+            username = displayName,
+            email = user.email ?: effectiveEmail,
+            isAnonymous = false,
+            providerId = "password",
+            sessionToken = uid
         )
-        ensureUserSchemaComplete(canonical, displayUsername)
 
-        Log.i(tag, "Successfully logged in user '$displayUsername' (userId=$canonical)")
+        Log.i(tag, "Successfully logged in via Firebase Auth '$displayName' (uid=$uid)")
         Result.success(session)
     }
 
     /**
-     * Initializes the complete canonical account schema under /users/{canonical}/.
+     * Signs in with Google credentials via Firebase Auth.
+     */
+    suspend fun signInWithGoogle(idToken: String): Result<AuthSession> = withContext(Dispatchers.IO) {
+        val credential = GoogleAuthProvider.getCredential(idToken, null)
+        val authResult = suspendCancellableCoroutine<Result<FirebaseUser>> { cont ->
+            firebaseAuth.signInWithCredential(credential)
+                .addOnSuccessListener { result ->
+                    val user = result.user
+                    if (user != null) {
+                        if (cont.isActive) cont.resume(Result.success(user))
+                    } else {
+                        if (cont.isActive) cont.resume(Result.failure(Exception("Google sign-in user is null.")))
+                    }
+                }
+                .addOnFailureListener { ex ->
+                    Log.e(tag, "Firebase Google Auth failed: ${ex.message}")
+                    if (cont.isActive) cont.resume(Result.failure(ex))
+                }
+        }
+
+        if (authResult.isFailure) {
+            return@withContext Result.failure(authResult.exceptionOrNull() ?: Exception("Google sign-in failed."))
+        }
+
+        val user = authResult.getOrThrow()
+        val uid = user.uid
+        val displayName = user.displayName?.ifBlank { null } ?: user.email?.substringBefore('@') ?: "Google User"
+        val now = System.currentTimeMillis()
+        val expiry = now + (30L * 24 * 60 * 60 * 1000L)
+
+        ensureUserSchemaComplete(uid = uid, displayName = displayName, email = user.email)
+
+        val session = AuthSession(
+            sessionToken = uid,
+            userId = uid,
+            username = displayName,
+            email = user.email,
+            isAnonymous = false,
+            providerId = "google.com",
+            expiresAt = expiry
+        )
+
+        prefs.saveAuthSession(session)
+        _currentSession.value = session
+        _currentUserProfile.value = UserProfile(
+            userId = uid,
+            username = displayName,
+            email = user.email,
+            isAnonymous = false,
+            providerId = "google.com",
+            sessionToken = uid
+        )
+
+        Log.i(tag, "Successfully signed in with Google '$displayName' (uid=$uid)")
+        Result.success(session)
+    }
+
+    /**
+     * Signs in anonymously (Guest Mode) with Firebase Auth.
+     */
+    suspend fun signInAnonymously(): Result<AuthSession> = withContext(Dispatchers.IO) {
+        val authResult = suspendCancellableCoroutine<Result<FirebaseUser>> { cont ->
+            firebaseAuth.signInAnonymously()
+                .addOnSuccessListener { result ->
+                    val user = result.user
+                    if (user != null) {
+                        if (cont.isActive) cont.resume(Result.success(user))
+                    } else {
+                        if (cont.isActive) cont.resume(Result.failure(Exception("Anonymous user is null.")))
+                    }
+                }
+                .addOnFailureListener { ex ->
+                    Log.e(tag, "Firebase Anonymous Auth failed: ${ex.message}")
+                    if (cont.isActive) cont.resume(Result.failure(ex))
+                }
+        }
+
+        if (authResult.isFailure) {
+            return@withContext Result.failure(authResult.exceptionOrNull() ?: Exception("Guest login failed."))
+        }
+
+        val user = authResult.getOrThrow()
+        val uid = user.uid
+        val displayName = "Guest User"
+        val now = System.currentTimeMillis()
+        val expiry = now + (30L * 24 * 60 * 60 * 1000L)
+
+        initializeNewUserAccount(
+            uid = uid,
+            displayName = displayName,
+            email = "",
+            isAnonymous = true,
+            providerId = "anonymous",
+            now = now
+        )
+
+        val session = AuthSession(
+            sessionToken = uid,
+            userId = uid,
+            username = displayName,
+            email = null,
+            isAnonymous = true,
+            providerId = "anonymous",
+            expiresAt = expiry
+        )
+
+        prefs.saveAuthSession(session)
+        _currentSession.value = session
+        _currentUserProfile.value = UserProfile(
+            userId = uid,
+            username = displayName,
+            email = null,
+            isAnonymous = true,
+            providerId = "anonymous",
+            sessionToken = uid
+        )
+
+        Log.i(tag, "Successfully signed in as Guest (uid=$uid)")
+        Result.success(session)
+    }
+
+    /**
+     * Initializes the complete canonical account schema under /users/{uid}/.
      * Guaranteed to clone the structure and default values from the canonical reference,
      * without copying any user's private data or existing chat messages.
      */
     suspend fun initializeNewUserAccount(
-        cleanUsername: String,
-        canonical: String,
-        passwordHash: String,
-        sessionTokenHash: String,
-        expiry: Long,
+        uid: String,
+        displayName: String,
+        email: String?,
+        isAnonymous: Boolean,
+        providerId: String = "password",
         now: Long = System.currentTimeMillis()
     ): Boolean = withContext(Dispatchers.IO) {
-        val userRef = database.getReference("users").child(canonical)
+        val userRef = database.getReference("users").child(uid)
 
         val profileMap = mapOf(
-            "username" to cleanUsername,
-            "canonicalUsername" to canonical,
+            "userId" to uid,
+            "username" to displayName,
+            "canonicalUsername" to displayName.lowercase().trim(),
+            "email" to (email ?: ""),
+            "isAnonymous" to isAnonymous,
+            "providerId" to providerId,
             "createdAt" to now,
             "updatedAt" to now
         )
 
         val authMap = mapOf(
-            "passwordHash" to passwordHash,
             "accountStatus" to "active",
+            "providerId" to providerId,
+            "isAnonymous" to isAnonymous,
             "createdAt" to now,
-            "sessions" to mapOf(
-                sessionTokenHash to mapOf(
-                    "sessionTokenHash" to sessionTokenHash,
-                    "createdAt" to now,
-                    "expiresAt" to expiry,
-                    "revoked" to false
-                )
-            )
+            "lastSignInAt" to now
         )
 
         val settingsMap = mapOf(
@@ -320,7 +481,8 @@ class GemoAuthManager(private val context: Context) {
                     "id" to "mem_pref_lang",
                     "isEnabled" to true
                 )
-            )
+            ),
+            "config" to mapOf("enabled" to true)
         )
 
         val initialConversationId = UUID.randomUUID().toString().replace("-", "").take(12)
@@ -331,8 +493,8 @@ class GemoAuthManager(private val context: Context) {
             "conversationId" to initialConversationId,
             "requestId" to UUID.randomUUID().toString(),
             "sender" to "ai",
-            "userId" to canonical,
-            "text" to "Hello $cleanUsername! Welcome to Gemo AI created by Rohit. How can I help you today?",
+            "userId" to uid,
+            "text" to "Hello $displayName! Welcome to Gemo AI created by Rohit. How can I help you today?",
             "status" to "completed",
             "timestamp" to now,
             "model" to "qwen2.5-1.5b-instruct-q4_k_m.gguf",
@@ -342,12 +504,12 @@ class GemoAuthManager(private val context: Context) {
         val initialConversationMap = mapOf(
             "id" to initialConversationId,
             "title" to "Welcome to Gemo AI",
-            "userId" to canonical,
+            "userId" to uid,
             "model" to "qwen2.5-1.5b-instruct-q4_k_m.gguf",
             "maker" to "Rohit",
             "createdAt" to now,
             "updatedAt" to now,
-            "lastMessage" to "Hello $cleanUsername! Welcome to Gemo AI created by Rohit.",
+            "lastMessage" to "Hello $displayName! Welcome to Gemo AI created by Rohit.",
             "prompt" to "Welcome",
             "lastPrompt" to "Welcome",
             "messages" to mapOf(
@@ -363,7 +525,7 @@ class GemoAuthManager(private val context: Context) {
             "files" to mapOf(
                 "readme_md" to mapOf(
                     "filename" to "README.md",
-                    "content" to "# Gemo AI Workspace\nUser: $cleanUsername\nIsolated secure workspace initialized.",
+                    "content" to "# Gemo AI Workspace\nUser: $displayName\nIsolated secure workspace initialized.",
                     "sizeBytes" to 80L,
                     "lastModified" to now
                 )
@@ -416,10 +578,11 @@ class GemoAuthManager(private val context: Context) {
      * Safely backfills missing structural nodes without deleting or overwriting any existing data.
      */
     suspend fun ensureUserSchemaComplete(
-        canonical: String,
-        displayUsername: String
+        uid: String,
+        displayName: String,
+        email: String? = null
     ) = withContext(Dispatchers.IO) {
-        val userRef = database.getReference("users").child(canonical)
+        val userRef = database.getReference("users").child(uid)
         val now = System.currentTimeMillis()
 
         userRef.addListenerForSingleValueEvent(object : ValueEventListener {
@@ -428,10 +591,19 @@ class GemoAuthManager(private val context: Context) {
 
                 if (!snapshot.hasChild("profile")) {
                     backfills["profile"] = mapOf(
-                        "username" to displayUsername,
-                        "canonicalUsername" to canonical,
+                        "userId" to uid,
+                        "username" to displayName,
+                        "canonicalUsername" to displayName.lowercase().trim(),
+                        "email" to (email ?: ""),
                         "createdAt" to now,
                         "updatedAt" to now
+                    )
+                }
+
+                if (!snapshot.hasChild("auth")) {
+                    backfills["auth"] = mapOf(
+                        "accountStatus" to "active",
+                        "lastSignInAt" to now
                     )
                 }
 
@@ -470,6 +642,32 @@ class GemoAuthManager(private val context: Context) {
                                 "id" to "mem_pref_lang",
                                 "isEnabled" to true
                             )
+                        ),
+                        "config" to mapOf("enabled" to true)
+                    )
+                }
+
+                if (!snapshot.hasChild("workspace")) {
+                    backfills["workspace"] = mapOf(
+                        "files" to mapOf(
+                            "readme_md" to mapOf(
+                                "filename" to "README.md",
+                                "content" to "# Gemo AI Workspace\nUser: $displayName\nIsolated workspace initialized.",
+                                "sizeBytes" to 75L,
+                                "lastModified" to now
+                            )
+                        )
+                    )
+                }
+
+                if (!snapshot.hasChild("agent")) {
+                    backfills["agent"] = mapOf(
+                        "status" to "idle",
+                        "lastCommand" to "",
+                        "updatedAt" to now,
+                        "terminal" to mapOf(
+                            "commands" to mapOf<String, Any>(),
+                            "output" to mapOf<String, Any>()
                         )
                     )
                 }
@@ -487,67 +685,10 @@ class GemoAuthManager(private val context: Context) {
                     backfills["stopGeneration"] = false
                 }
 
-                if (!snapshot.hasChild("agent")) {
-                    backfills["agent"] = mapOf(
-                        "status" to "idle",
-                        "lastCommand" to "",
-                        "updatedAt" to now,
-                        "terminal" to mapOf(
-                            "commands" to mapOf<String, Any>(),
-                            "output" to mapOf<String, Any>()
-                        )
-                    )
-                }
-
-                if (!snapshot.hasChild("conversations")) {
-                    val initCid = UUID.randomUUID().toString().replace("-", "").take(12)
-                    val welcomeMsgId = "msg_welcome_" + now
-                    backfills["conversations"] = mapOf(
-                        initCid to mapOf(
-                            "id" to initCid,
-                            "title" to "Welcome to Gemo AI",
-                            "userId" to canonical,
-                            "model" to "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-                            "maker" to "Rohit",
-                            "createdAt" to now,
-                            "updatedAt" to now,
-                            "lastMessage" to "Hello $displayUsername! Welcome to Gemo AI created by Rohit.",
-                            "prompt" to "Welcome",
-                            "lastPrompt" to "Welcome",
-                            "messages" to mapOf(
-                                welcomeMsgId to mapOf(
-                                    "messageId" to welcomeMsgId,
-                                    "conversationId" to initCid,
-                                    "sender" to "ai",
-                                    "userId" to canonical,
-                                    "text" to "Hello $displayUsername! Welcome to Gemo AI created by Rohit. How can I help you today?",
-                                    "status" to "completed",
-                                    "timestamp" to now,
-                                    "model" to "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-                                    "maker" to "Rohit"
-                                )
-                            )
-                        )
-                    )
-                }
-
-                if (!snapshot.hasChild("workspace")) {
-                    backfills["workspace"] = mapOf(
-                        "files" to mapOf(
-                            "readme_md" to mapOf(
-                                "filename" to "README.md",
-                                "content" to "# Gemo AI Workspace\nUser: $displayUsername\nIsolated secure workspace initialized.",
-                                "sizeBytes" to 80L,
-                                "lastModified" to now
-                            )
-                        )
-                    )
-                }
-
                 if (backfills.isNotEmpty()) {
-                    userRef.updateChildren(backfills) { error, _ ->
-                        if (error == null) {
-                            Log.d(tag, "Safely backfilled ${backfills.keys} for user $canonical")
+                    userRef.updateChildren(backfills) { err, _ ->
+                        if (err == null) {
+                            Log.d(tag, "Safely backfilled ${backfills.keys} for user $uid")
                         }
                     }
                 }
@@ -560,61 +701,33 @@ class GemoAuthManager(private val context: Context) {
     }
 
     /**
-     * Verifies current session token against /users/{canonical}/auth/sessions/{tokenHash}.
+     * Verifies that the current Firebase Auth session is active and valid.
      */
     suspend fun verifySession(): Boolean = withContext(Dispatchers.IO) {
-        val session = _currentSession.value ?: prefs.getAuthSession() ?: return@withContext false
-        if (session.isExpired) {
-            logout()
-            return@withContext false
-        }
-
-        val canonical = session.userId.lowercase().trim()
-        val tokenHash = PasswordHasher.sha256Hex(session.sessionToken)
-        val sessionRef = database.getReference("users").child(canonical).child("auth").child("sessions").child(tokenHash)
-
-        val valid = suspendCancellableCoroutine<Boolean> { cont ->
-            sessionRef.addListenerForSingleValueEvent(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    if (!snapshot.exists()) {
-                        // Trust valid unexpired local session if offline or remote session was pruned
+        val user = firebaseAuth.currentUser ?: return@withContext false
+        try {
+            suspendCancellableCoroutine<Boolean> { cont ->
+                user.getIdToken(false)
+                    .addOnSuccessListener {
                         if (cont.isActive) cont.resume(true)
-                        return
                     }
-                    val revoked = snapshot.child("revoked").getValue(Boolean::class.java) == true
-                    val expiresAt = snapshot.child("expiresAt").getValue(Number::class.java)?.toLong() ?: Long.MAX_VALUE
-                    val now = System.currentTimeMillis()
-                    if (cont.isActive) cont.resume(!revoked && expiresAt > now)
-                }
-
-                override fun onCancelled(error: DatabaseError) {
-                    if (cont.isActive) cont.resume(true)
-                }
-            })
-        }
-
-        if (!valid) {
-            logout()
-            false
-        } else {
+                    .addOnFailureListener {
+                        if (cont.isActive) cont.resume(false)
+                    }
+            }
+        } catch (_: Exception) {
             true
         }
     }
 
     /**
-     * Logs out the user, revoking the session token in /users/{canonical}/auth/sessions/{tokenHash}.
+     * Signs out the user from Firebase Auth and clears local session cache.
      */
     suspend fun logout() = withContext(Dispatchers.IO) {
-        val session = _currentSession.value ?: prefs.getAuthSession()
-        if (session != null) {
-            val canonical = session.userId.lowercase().trim()
-            val tokenHash = PasswordHasher.sha256Hex(session.sessionToken)
-            try {
-                database.getReference("users").child(canonical).child("auth").child("sessions").child(tokenHash)
-                    .child("revoked").setValue(true)
-            } catch (e: Exception) {
-                Log.w(tag, "Logout error: ${e.message}")
-            }
+        try {
+            firebaseAuth.signOut()
+        } catch (e: Exception) {
+            Log.w(tag, "Firebase signOut error: ${e.message}")
         }
         prefs.clearAuthSession()
         _currentSession.value = null

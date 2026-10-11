@@ -35,7 +35,7 @@ private data class RequestLangInfo(
     val isLatinScript: Boolean
 )
 
-class ChatRepository(context: Context) {
+class ChatRepository(private val context: Context) {
     val authManager = com.example.data.auth.GemoAuthManager(context)
     val googleAuthManager = GoogleAuthManager(context)
     val currentUserProfile: StateFlow<com.example.data.model.UserProfile?> = authManager.currentUserProfile
@@ -928,10 +928,10 @@ class ChatRepository(context: Context) {
 
     // Authenticated User Multi-Device Cloud Data & Chat Restore
     fun restoreUserCloudChats(userId: String, onComplete: (() -> Unit)? = null) {
-        val canonicalUserId = userId.trim().lowercase()
+        val targetUserId = userId.trim()
         scope.launch {
             // 1. Restore cloud-stored display username
-            rtdbManager.fetchRemoteUsername(canonicalUserId) { remoteUsername ->
+            rtdbManager.fetchRemoteUsername(targetUserId) { remoteUsername ->
                 if (!remoteUsername.isNullOrBlank()) {
                     prefs.setCustomUsername(remoteUsername)
                     _displayUsername.value = remoteUsername
@@ -939,7 +939,7 @@ class ChatRepository(context: Context) {
             }
 
             // 2. Restore workspace files from cloud
-            rtdbManager.fetchUserWorkspaceFilesFromRtdb(canonicalUserId) { cloudFiles ->
+            rtdbManager.fetchUserWorkspaceFilesFromRtdb(targetUserId) { cloudFiles ->
                 if (cloudFiles.isNotEmpty()) {
                     scope.launch {
                         for (file in cloudFiles) {
@@ -950,21 +950,21 @@ class ChatRepository(context: Context) {
             }
 
             // 3. Restore conversations & messages strictly for this user (Zero cross-user data sharing)
-            rtdbManager.fetchUserConversationsFromRtdb(canonicalUserId) { cloudConvs, messagesMap ->
-                val existingLocal = prefs.getConversations(canonicalUserId)
-                    .filter { it.userId.isBlank() || it.userId.lowercase().trim() == canonicalUserId }
+            rtdbManager.fetchUserConversationsFromRtdb(targetUserId) { cloudConvs, messagesMap ->
+                val existingLocal = prefs.getConversations(targetUserId)
+                    .filter { it.userId == targetUserId }
                 val merged = (cloudConvs + existingLocal)
-                    .map { it.copy(userId = canonicalUserId) }
+                    .map { it.copy(userId = targetUserId) }
                     .distinctBy { it.id }
                     .sortedByDescending { it.updatedAt }
 
                 _conversations.value = merged
-                prefs.saveConversations(merged, canonicalUserId)
+                prefs.saveConversations(merged, targetUserId)
 
                 for ((cId, msgs) in messagesMap) {
-                    val localMsgs = prefs.getMessages(cId, canonicalUserId)
+                    val localMsgs = prefs.getMessages(cId, targetUserId)
                     val mergedMsgs = (localMsgs + msgs).distinctBy { it.messageId }.sortedBy { it.timestamp }
-                    prefs.saveMessages(cId, mergedMsgs, canonicalUserId)
+                    prefs.saveMessages(cId, mergedMsgs, targetUserId)
                 }
 
                 if (merged.isNotEmpty()) {
@@ -972,7 +972,7 @@ class ChatRepository(context: Context) {
                 } else {
                     createNewConversation()
                 }
-                Log.d("ChatRepository", "Successfully restored ${cloudConvs.size} cloud conversations for user: $canonicalUserId")
+                Log.d("ChatRepository", "Successfully restored ${cloudConvs.size} cloud conversations for user: $targetUserId")
                 onComplete?.invoke()
             }
         }
@@ -983,8 +983,9 @@ class ChatRepository(context: Context) {
     }
 
     fun register(
-        username: String,
+        emailOrUsername: String,
         password: String,
+        desiredUsername: String? = null,
         onResult: (Result<com.example.data.model.AuthSession>) -> Unit
     ) {
         scope.launch {
@@ -995,7 +996,7 @@ class ChatRepository(context: Context) {
             _messages.value = emptyList()
             _currentConversation.value = null
 
-            val result = authManager.register(username, password)
+            val result = authManager.register(emailOrUsername, password, desiredUsername)
             result.onSuccess { session ->
                 _displayUsername.value = session.username
                 rtdbManager.syncDisplayUsername(session.username, session.userId)
@@ -1006,8 +1007,16 @@ class ChatRepository(context: Context) {
         }
     }
 
-    fun login(
+    fun register(
         username: String,
+        password: String,
+        onResult: (Result<com.example.data.model.AuthSession>) -> Unit
+    ) {
+        register(emailOrUsername = username, password = password, desiredUsername = username, onResult = onResult)
+    }
+
+    fun login(
+        emailOrUsername: String,
         password: String,
         onResult: (Result<com.example.data.model.AuthSession>) -> Unit
     ) {
@@ -1019,7 +1028,50 @@ class ChatRepository(context: Context) {
             _messages.value = emptyList()
             _currentConversation.value = null
 
-            val result = authManager.login(username, password)
+            val result = authManager.login(emailOrUsername, password)
+            result.onSuccess { session ->
+                _displayUsername.value = session.username
+                rtdbManager.syncDisplayUsername(session.username, session.userId)
+                rtdbManager.resetStopFlag()
+                restoreUserCloudChats(session.userId)
+            }
+            onResult(result)
+        }
+    }
+
+    fun signInWithGoogleCredential(
+        idToken: String,
+        onResult: (Result<com.example.data.model.AuthSession>) -> Unit
+    ) {
+        scope.launch {
+            rtdbManager.stopListeningToConversation()
+            workspaceManager.clearAllFiles()
+            _conversations.value = emptyList()
+            _messages.value = emptyList()
+            _currentConversation.value = null
+
+            val result = authManager.signInWithGoogle(idToken)
+            result.onSuccess { session ->
+                _displayUsername.value = session.username
+                rtdbManager.syncDisplayUsername(session.username, session.userId)
+                rtdbManager.resetStopFlag()
+                restoreUserCloudChats(session.userId)
+            }
+            onResult(result)
+        }
+    }
+
+    fun signInAnonymously(
+        onResult: (Result<com.example.data.model.AuthSession>) -> Unit
+    ) {
+        scope.launch {
+            rtdbManager.stopListeningToConversation()
+            workspaceManager.clearAllFiles()
+            _conversations.value = emptyList()
+            _messages.value = emptyList()
+            _currentConversation.value = null
+
+            val result = authManager.signInAnonymously()
             result.onSuccess { session ->
                 _displayUsername.value = session.username
                 rtdbManager.syncDisplayUsername(session.username, session.userId)
@@ -1050,12 +1102,41 @@ class ChatRepository(context: Context) {
         serverClientId: String? = null,
         onResult: (Result<GoogleUserProfile>) -> Unit
     ) {
-        // Obsolete: Redirect to success with current profile
-        val profile = GoogleUserProfile(
-            googleUserId = prefs.getUserId(),
-            username = prefs.getDisplayUsername()
-        )
-        onResult(Result.success(profile))
+        scope.launch {
+            try {
+                val clientId = serverClientId
+                    ?: context.getString(com.example.R.string.default_web_client_id)
+                val credentialManager = androidx.credentials.CredentialManager.create(activity)
+                val googleIdOption = com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption.Builder(clientId)
+                    .build()
+                val request = androidx.credentials.GetCredentialRequest.Builder()
+                    .addCredentialOption(googleIdOption)
+                    .build()
+
+                val credentialResult = credentialManager.getCredential(activity, request)
+                val credential = credentialResult.credential
+                if (credential is androidx.credentials.CustomCredential &&
+                    credential.type == com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
+                ) {
+                    val googleIdTokenCredential = com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.createFrom(credential.data)
+                    val idToken = googleIdTokenCredential.idToken
+
+                    signInWithGoogleCredential(idToken) { authRes ->
+                        authRes.onSuccess { sess ->
+                            onResult(Result.success(GoogleUserProfile(googleUserId = sess.userId, username = sess.username, email = sess.email ?: "")))
+                        }
+                        authRes.onFailure { err ->
+                            onResult(Result.failure(err))
+                        }
+                    }
+                } else {
+                    onResult(Result.failure(Exception("Unable to obtain Google ID token credential.")))
+                }
+            } catch (e: Exception) {
+                Log.e("ChatRepository", "Google Sign-In failed: ${e.message}")
+                onResult(Result.failure(e))
+            }
+        }
     }
 
     fun signOutGoogle(onComplete: () -> Unit = {}) {

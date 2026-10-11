@@ -18,4 +18,5 @@
     <string name="model_selector">Select Model</string>
     <string name="ai_generating">Gemo is thinking…</string>
     <string name="stop_generation">Stop</string>
+    <string name="default_web_client_id">96131864914-llc3f195hjovmffrnob2nvg9oc68p01j.apps.googleusercontent.com</string>
 </resources>

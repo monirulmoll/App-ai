@@ -95,11 +95,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun getStableInternalUserId(): String = com.example.data.local.LocalChatPreferences(getApplication()).getUserId()
 
     fun login(
-        username: String,
+        emailOrUsername: String,
         password: String,
         onResult: (Result<com.example.data.model.AuthSession>) -> Unit
     ) {
-        repository.login(username, password) { result ->
+        repository.login(emailOrUsername, password) { result ->
             if (result.isSuccess) {
                 _currentScreen.value = AppScreen.HOME
             }
@@ -108,11 +108,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun register(
-        username: String,
+        emailOrUsername: String,
         password: String,
+        desiredUsername: String? = null,
         onResult: (Result<com.example.data.model.AuthSession>) -> Unit
     ) {
-        repository.register(username, password) { result ->
+        repository.register(emailOrUsername, password, desiredUsername) { result ->
+            if (result.isSuccess) {
+                _currentScreen.value = AppScreen.HOME
+            }
+            onResult(result)
+        }
+    }
+
+    fun signInAnonymously(
+        onResult: (Result<com.example.data.model.AuthSession>) -> Unit
+    ) {
+        repository.signInAnonymously { result ->
             if (result.isSuccess) {
                 _currentScreen.value = AppScreen.HOME
             }

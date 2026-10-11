@@ -11,6 +11,9 @@ data class AuthSession(
     val sessionToken: String,
     val userId: String,
     val username: String,
+    val email: String? = null,
+    val isAnonymous: Boolean = false,
+    val providerId: String = "password",
     val createdAt: Long = System.currentTimeMillis(),
     val expiresAt: Long = System.currentTimeMillis() + (30L * 24 * 60 * 60 * 1000) // 30 days
 ) {

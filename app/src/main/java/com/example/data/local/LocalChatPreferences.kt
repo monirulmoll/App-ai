@@ -60,6 +60,15 @@ class LocalChatPreferences(context: Context) {
      * 3. Clear default fallback: "User".
      */
     fun getDisplayUsername(): String {
+        try {
+            val fbUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+            if (fbUser != null) {
+                if (!fbUser.displayName.isNullOrBlank()) return fbUser.displayName!!
+                if (!fbUser.email.isNullOrBlank()) return fbUser.email!!.substringBefore('@')
+                if (fbUser.isAnonymous) return "Guest User"
+            }
+        } catch (_: Exception) {}
+
         val custom = getCustomUsername()
         if (!custom.isNullOrBlank()) {
             return custom
@@ -73,11 +82,6 @@ class LocalChatPreferences(context: Context) {
         val storedUsername = prefs.getString(KEY_AUTH_USERNAME, null)?.trim()
         if (!storedUsername.isNullOrBlank()) {
             return storedUsername
-        }
-
-        val legacyUsername = prefs.getString(KEY_GOOGLE_USERNAME, null)?.trim()
-        if (!legacyUsername.isNullOrBlank()) {
-            return legacyUsername
         }
 
         return "User"
@@ -99,37 +103,31 @@ class LocalChatPreferences(context: Context) {
 
     /**
      * Internal stable unique user ID used strictly for system routing & database isolation.
-     * Matches the canonical username chosen at account creation.
-     * If not logged in, generates and retains a device guest ID. Never hardcodes any user's identity.
+     * Guaranteed to return the authenticated Firebase UID when signed in.
      */
     fun getUserId(): String {
+        try {
+            val fbUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+            if (fbUser != null && fbUser.uid.isNotBlank()) {
+                return fbUser.uid
+            }
+        } catch (_: Exception) {}
+
         val session = getAuthSession()
-        if (session != null) {
-            val uname = session.username.trim()
-            if (uname.isNotBlank()) {
-                return uname.lowercase()
-            }
-            val uId = session.userId.trim()
-            if (uId.isNotBlank() && !uId.startsWith("user_") && !uId.startsWith("guest_")) {
-                return uId.lowercase()
-            }
+        if (session != null && session.userId.isNotBlank()) {
+            return session.userId
         }
-        val storedAuthUsername = prefs.getString(KEY_AUTH_USERNAME, null)?.trim()
-        if (!storedAuthUsername.isNullOrBlank()) {
-            return storedAuthUsername.lowercase()
-        }
-        val custom = getCustomUsername()
-        if (!custom.isNullOrBlank() && !custom.startsWith("user_") && !custom.startsWith("guest_")) {
-            return custom.lowercase()
-        }
+
         val storedAuthId = prefs.getString(KEY_AUTH_USER_ID, null)?.trim()
-        if (!storedAuthId.isNullOrBlank() && !storedAuthId.startsWith("user_") && !storedAuthId.startsWith("guest_")) {
-            return storedAuthId.lowercase()
+        if (!storedAuthId.isNullOrBlank()) {
+            return storedAuthId
         }
+
         val existing = prefs.getString(KEY_USER_ID, null)?.trim()
         if (!existing.isNullOrBlank()) {
-            return existing.lowercase()
+            return existing
         }
+
         val newGuest = "guest_" + java.util.UUID.randomUUID().toString().replace("-", "").take(8)
         prefs.edit().putString(KEY_USER_ID, newGuest).apply()
         return newGuest
@@ -138,8 +136,7 @@ class LocalChatPreferences(context: Context) {
     // --- AUTHENTICATION SESSION METHODS ---
 
     fun saveAuthSession(session: com.example.data.model.AuthSession) {
-        val canonicalUsername = session.username.trim().lowercase()
-        val effectiveUserId = canonicalUsername.ifBlank { session.userId.trim().lowercase() }
+        val effectiveUserId = session.userId.trim()
         prefs.edit()
             .putString(KEY_SESSION_TOKEN, session.sessionToken)
             .putString(KEY_AUTH_USER_ID, effectiveUserId)
@@ -152,16 +149,12 @@ class LocalChatPreferences(context: Context) {
     fun getAuthSession(): com.example.data.model.AuthSession? {
         val token = prefs.getString(KEY_SESSION_TOKEN, null) ?: return null
         val username = prefs.getString(KEY_AUTH_USERNAME, null) ?: ""
-        var userId = prefs.getString(KEY_AUTH_USER_ID, null) ?: ""
-        val canonicalUsername = username.trim().lowercase()
-        if (canonicalUsername.isNotBlank()) {
-            userId = canonicalUsername
-        }
+        val userId = prefs.getString(KEY_AUTH_USER_ID, null)?.trim()?.ifBlank { null } ?: token
         val expiry = prefs.getLong(KEY_SESSION_EXPIRY, 0L)
         val session = com.example.data.model.AuthSession(
             sessionToken = token,
-            userId = userId.ifBlank { canonicalUsername.ifBlank { "anonymous" } },
-            username = username.ifBlank { userId },
+            userId = userId,
+            username = username.ifBlank { "User" },
             expiresAt = expiry
         )
         if (session.isExpired) {
@@ -300,22 +293,22 @@ class LocalChatPreferences(context: Context) {
     }
 
     private fun getConversationsKey(targetUserId: String?): String {
-        val uid = (targetUserId ?: getUserId()).trim().lowercase()
+        val uid = (targetUserId ?: getUserId()).trim()
         return if (uid.isNotBlank()) "conversations_json_$uid" else KEY_CONVERSATIONS
     }
 
     private fun getMessagesKey(conversationId: String, targetUserId: String?): String {
-        val uid = (targetUserId ?: getUserId()).trim().lowercase()
+        val uid = (targetUserId ?: getUserId()).trim()
         return if (uid.isNotBlank()) "conv_messages_${uid}_$conversationId" else (PREFIX_MESSAGES + conversationId)
     }
 
     fun getActiveConversationId(targetUserId: String? = null): String? {
-        val uid = (targetUserId ?: getUserId()).trim().lowercase()
+        val uid = (targetUserId ?: getUserId()).trim()
         return prefs.getString("${KEY_ACTIVE_CONV}_$uid", null) ?: prefs.getString(KEY_ACTIVE_CONV, null)
     }
 
     fun setActiveConversationId(id: String?, targetUserId: String? = null) {
-        val uid = (targetUserId ?: getUserId()).trim().lowercase()
+        val uid = (targetUserId ?: getUserId()).trim()
         val editor = prefs.edit()
         if (id != null) {
             editor.putString("${KEY_ACTIVE_CONV}_$uid", id)
@@ -328,23 +321,12 @@ class LocalChatPreferences(context: Context) {
     }
 
     fun getConversations(targetUserId: String? = null): List<Conversation> {
-        val key = getConversationsKey(targetUserId)
-        var jsonStr = prefs.getString(key, null)
-        val uid = (targetUserId ?: getUserId()).trim().lowercase()
-        // If user-specific key is not populated yet, check fallback and strictly filter to only this user's conversations
-        if (jsonStr == null) {
-            val fallbackStr = prefs.getString(KEY_CONVERSATIONS, null)
-            if (!fallbackStr.isNullOrBlank()) {
-                val parsed = parseConversationsJson(fallbackStr)
-                val userOnly = parsed.filter { it.userId.lowercase().trim() == uid }
-                if (userOnly.isNotEmpty()) {
-                    saveConversations(userOnly, uid)
-                    return userOnly
-                }
-            }
-            return emptyList()
-        }
-        return parseConversationsJson(jsonStr)
+        val uid = (targetUserId ?: getUserId()).trim()
+        val key = getConversationsKey(uid)
+        val jsonStr = prefs.getString(key, null) ?: return emptyList()
+        val allConvs = parseConversationsJson(jsonStr)
+        // Strict anti-leak filter: only return conversations belonging to this exact user ID
+        return allConvs.filter { it.userId == uid }
     }
 
     private fun parseConversationsJson(jsonStr: String): List<Conversation> {
