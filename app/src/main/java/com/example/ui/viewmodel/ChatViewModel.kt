@@ -107,6 +107,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun registerWithDetails(
+        email: String,
+        password: String,
+        displayName: String,
+        username: String,
+        onResult: (Result<com.example.data.model.AuthSession>) -> Unit
+    ) {
+        repository.registerWithDetails(email, password, displayName, username) { result ->
+            if (result.isSuccess) {
+                _currentScreen.value = AppScreen.HOME
+            }
+            onResult(result)
+        }
+    }
+
     fun register(
         emailOrUsername: String,
         password: String,

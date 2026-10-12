@@ -1,0 +1,27 @@
+{
+  "firebase": {
+    "database_url": "https://ussr-error-404-default-rtdb.firebaseio.com",
+    "timeout_seconds": 15,
+    "poll_interval_seconds": 0.5,
+    "terminal_poll_interval_seconds": 0.4
+  },
+  "schema": {
+    "root_node": "users",
+    "conversations_path": "conversations",
+    "messages_path": "messages",
+    "workspace_path": "workspace/files",
+    "terminal_commands_path": "agent/terminal/commands",
+    "terminal_output_path": "agent/terminal/output",
+    "stop_path": "stop",
+    "stop_generation_path": "stopGeneration",
+    "settings_path": "settings",
+    "memory_path": "memory"
+  },
+  "agent": {
+    "name": "Gemo AI",
+    "maker": "Rohit",
+    "default_model": "Qwen 2.5 1.5B Instruct",
+    "workspace_dir": "workspace",
+    "log_level": "INFO"
+  }
+}

@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.activity.ComponentActivity
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,7 +26,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
@@ -33,6 +34,9 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import com.example.R
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -98,6 +102,7 @@ fun AuthScreen(
 
     // Register Form State
     var regDisplayName by remember { mutableStateOf("") }
+    var regUsername by remember { mutableStateOf("") }
     var regEmail by remember { mutableStateOf("") }
     var regPassword by remember { mutableStateOf("") }
     var regConfirmPassword by remember { mutableStateOf("") }
@@ -149,25 +154,16 @@ fun AuthScreen(
             ) {
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Brand Emblem
-                Box(
+                // Brand Emblem - Official Gemo AI Logo
+                Image(
+                    painter = painterResource(id = R.drawable.ic_gemo_logo_1791602183832),
+                    contentDescription = "Gemo AI Logo",
                     modifier = Modifier
-                        .size(72.dp)
+                        .size(76.dp)
                         .clip(CircleShape)
-                        .background(
-                            Brush.linearGradient(
-                                colors = listOf(GeminiBlue, GeminiPurple, GeminiCyan)
-                            )
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AutoAwesome,
-                        contentDescription = "Gemo AI Logo",
-                        tint = Color.White,
-                        modifier = Modifier.size(36.dp)
-                    )
-                }
+                        .border(2.dp, Brush.linearGradient(listOf(GeminiCyan, GeminiPurple)), CircleShape),
+                    contentScale = ContentScale.Crop
+                )
 
                 Spacer(modifier = Modifier.height(16.dp))
 
@@ -178,7 +174,7 @@ fun AuthScreen(
                 )
 
                 Text(
-                    text = if (selectedTab == 0) "Sign in with your Firebase account" else "Create your personal Gemo AI account",
+                    text = if (selectedTab == 0) "Sign in to your Gemo AI account" else "Create your personal Gemo AI account",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -289,15 +285,15 @@ fun AuthScreen(
                                 }
                             }
 
-                            // Email or Username Field
+                            // Username or Email Field
                             OutlinedTextField(
                                 value = loginEmailOrUser,
                                 onValueChange = {
                                     loginEmailOrUser = it
                                     loginError = null
                                 },
-                                label = { Text("Email or Username") },
-                                placeholder = { Text("user@example.com") },
+                                label = { Text("Username or Email") },
+                                placeholder = { Text("e.g. ussr_error_404 or name@example.com") },
                                 leadingIcon = {
                                     Icon(
                                         Icons.Default.Email,
@@ -422,7 +418,7 @@ fun AuthScreen(
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Text("Signing In...", fontWeight = FontWeight.SemiBold)
                                 } else {
-                                    Text("Sign In with Firebase", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                    Text("Sign In", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                                 }
                             }
 
@@ -598,7 +594,7 @@ fun AuthScreen(
                                 }
                             }
 
-                            // Display Name / Username Field
+                            // Display Name Field
                             OutlinedTextField(
                                 value = regDisplayName,
                                 onValueChange = {
@@ -606,12 +602,50 @@ fun AuthScreen(
                                     registerError = null
                                 },
                                 label = { Text("Display Name") },
-                                placeholder = { Text("Your Name or Username") },
+                                placeholder = { Text("e.g. John Doe or Error 404") },
                                 leadingIcon = {
                                     Icon(
                                         Icons.Default.Person,
                                         contentDescription = "Name Icon",
                                         tint = if (regDisplayName.isNotBlank()) GeminiCyan else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Text,
+                                    imeAction = ImeAction.Next
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onNext = { focusManager.moveFocus(FocusDirection.Down) }
+                                ),
+                                colors = TextFieldDefaults.colors(
+                                    focusedIndicatorColor = GeminiCyan,
+                                    focusedLabelColor = GeminiCyan
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("register_display_name_input")
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Username Field (Required, no spaces allowed)
+                            OutlinedTextField(
+                                value = regUsername,
+                                onValueChange = {
+                                    regUsername = it
+                                    registerError = null
+                                },
+                                label = { Text("Username (Unique ID)") },
+                                placeholder = { Text("e.g. ussr_error_404") },
+                                supportingText = { Text("Unique ID without spaces (letters, numbers, underscores)") },
+                                isError = regUsername.contains(" "),
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.AlternateEmail,
+                                        contentDescription = "Username Icon",
+                                        tint = if (regUsername.isNotBlank()) GeminiCyan else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 },
                                 singleLine = true,
@@ -763,9 +797,22 @@ fun AuthScreen(
                             Button(
                                 onClick = {
                                     val cleanName = regDisplayName.trim()
+                                    val rawUsername = regUsername.trim()
                                     val cleanEmail = regEmail.trim()
                                     if (cleanName.isBlank()) {
                                         registerError = "Please enter your display name."
+                                        return@Button
+                                    }
+                                    if (rawUsername.isBlank()) {
+                                        registerError = "Please choose a username (e.g. ussr_error_404)."
+                                        return@Button
+                                    }
+                                    if (rawUsername.contains(" ")) {
+                                        registerError = "Username cannot contain spaces. Use only letters, numbers, and underscores (e.g. ussr_error_404)."
+                                        return@Button
+                                    }
+                                    if (rawUsername.length < 3 || rawUsername.length > 30) {
+                                        registerError = "Username must be between 3 and 30 characters."
                                         return@Button
                                     }
                                     if (cleanEmail.isBlank()) {
@@ -785,13 +832,13 @@ fun AuthScreen(
                                     registerError = null
                                     focusManager.clearFocus()
 
-                                    viewModel.register(cleanEmail, regPassword, cleanName) { res ->
+                                    viewModel.registerWithDetails(cleanEmail, regPassword, cleanName, rawUsername) { res ->
                                         isRegisterLoading = false
                                         res.onSuccess {
                                             registerSuccess = "Account created! Loading your workspace..."
                                         }
                                         res.onFailure { err ->
-                                            registerError = err.message ?: "Failed to create Firebase account."
+                                            registerError = err.message ?: "Failed to create account."
                                         }
                                     }
                                 },
@@ -812,7 +859,7 @@ fun AuthScreen(
                                         strokeWidth = 2.5.dp
                                     )
                                     Spacer(modifier = Modifier.width(10.dp))
-                                    Text("Creating Firebase Account...", color = Color.Black, fontWeight = FontWeight.SemiBold)
+                                    Text("Creating Account...", color = Color.Black, fontWeight = FontWeight.SemiBold)
                                 } else {
                                     Text("Create Account", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                                 }

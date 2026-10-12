@@ -76,8 +76,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.R
 import androidx.compose.ui.unit.sp
 import com.example.data.model.ChatMessage
 import com.example.ui.theme.DarkAiBubble
@@ -347,30 +349,20 @@ private fun AiMessageBubble(
             verticalAlignment = Alignment.Top,
             horizontalArrangement = Arrangement.Start
         ) {
-            // AI Sparkle Avatar with Orbiting Glow
-            Box(
+            // Gemo AI Logo Avatar
+            Image(
+                painter = painterResource(id = R.drawable.ic_gemo_logo_1791602183832),
+                contentDescription = "Gemo AI",
                 modifier = Modifier
                     .size(36.dp)
                     .clip(CircleShape)
-                    .background(
-                        Brush.linearGradient(
-                            listOf(GleamGradientViolet, GleamGradientPink, GleamGradientCyan)
-                        )
-                    )
                     .border(
                         width = 1.dp,
                         color = Color.White.copy(alpha = 0.5f),
                         shape = CircleShape
                     ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.AutoAwesome,
-                    contentDescription = "Gemo AI",
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
+                contentScale = ContentScale.Crop
+            )
 
             Spacer(modifier = Modifier.width(10.dp))
 

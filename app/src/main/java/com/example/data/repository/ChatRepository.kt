@@ -1068,6 +1068,32 @@ class ChatRepository(private val context: Context) {
         restoreUserCloudChats(googleUserId, onComplete)
     }
 
+    fun registerWithDetails(
+        email: String,
+        password: String,
+        displayName: String,
+        username: String,
+        onResult: (Result<com.example.data.model.AuthSession>) -> Unit
+    ) {
+        scope.launch {
+            rtdbManager.stopListeningToConversation()
+            workspaceManager.clearActiveFiles()
+            memoryManager.clearAllMemories()
+            _conversations.value = emptyList()
+            _messages.value = emptyList()
+            _currentConversation.value = null
+
+            val result = authManager.registerWithDetails(email, password, displayName, username)
+            result.onSuccess { session ->
+                _displayUsername.value = session.username
+                rtdbManager.syncDisplayUsername(session.username, session.userId)
+                rtdbManager.resetStopFlag(session.userId)
+                restoreUserCloudChats(session.userId)
+            }
+            onResult(result)
+        }
+    }
+
     fun register(
         emailOrUsername: String,
         password: String,

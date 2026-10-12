@@ -65,12 +65,21 @@ class GemoAuthManager(private val context: Context) {
             firebaseAuth.addAuthStateListener { auth ->
                 val user = auth.currentUser
                 if (user != null) {
-                    val displayName = user.displayName?.ifBlank { null }
+                    val cachedSession = prefs.getAuthSession()
+                    // If user is already authenticated with a custom username node in DB, preserve that username node ID
+                    val activeUid = if (cachedSession != null && cachedSession.userId.isNotBlank() && cachedSession.userId != user.uid) {
+                        cachedSession.userId
+                    } else {
+                        user.uid
+                    }
+                    val displayName = cachedSession?.username?.ifBlank { null }
+                        ?: user.displayName?.ifBlank { null }
                         ?: user.email?.substringBefore('@')
                         ?: if (user.isAnonymous) "Guest User" else "User"
+
                     val session = AuthSession(
-                        sessionToken = user.uid,
-                        userId = user.uid,
+                        sessionToken = activeUid,
+                        userId = activeUid,
                         username = displayName,
                         email = user.email,
                         isAnonymous = user.isAnonymous,
@@ -79,18 +88,18 @@ class GemoAuthManager(private val context: Context) {
                     )
                     _currentSession.value = session
                     _currentUserProfile.value = UserProfile(
-                        userId = user.uid,
+                        userId = activeUid,
                         username = displayName,
                         email = user.email,
                         isAnonymous = user.isAnonymous,
                         providerId = session.providerId,
-                        sessionToken = user.uid
+                        sessionToken = activeUid
                     )
                     prefs.saveAuthSession(session)
                 } else {
                     val cached = prefs.getAuthSession()
-                    if (cached != null && cached.sessionToken.isNotBlank()) {
-                        // Do not wipe cached session immediately if offline
+                    if (cached != null && cached.sessionToken.isNotBlank() && !cached.isExpired) {
+                        // Keep cached session intact for offline/custom username auth
                     } else {
                         _currentSession.value = null
                         _currentUserProfile.value = null
@@ -103,6 +112,10 @@ class GemoAuthManager(private val context: Context) {
     }
 
     private fun loadInitialSession(): AuthSession? {
+        val cached = prefs.getAuthSession()
+        if (cached != null && cached.userId.isNotBlank() && !cached.isExpired) {
+            return cached
+        }
         try {
             val user = firebaseAuth.currentUser
             if (user != null) {
@@ -123,6 +136,10 @@ class GemoAuthManager(private val context: Context) {
     }
 
     private fun loadInitialProfile(): UserProfile? {
+        val cached = prefs.getUserProfile()
+        if (cached != null && cached.userId.isNotBlank()) {
+            return cached
+        }
         try {
             val user = firebaseAuth.currentUser
             if (user != null) {
@@ -154,72 +171,121 @@ class GemoAuthManager(private val context: Context) {
         }
     }
 
+    fun hashPassword(password: String): String {
+        return try {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            val bytes = md.digest(password.toByteArray(Charsets.UTF_8))
+            bytes.joinToString("") { "%02x".format(it) }
+        } catch (_: Exception) {
+            password
+        }
+    }
+
+    fun isValidUsername(username: String): Boolean {
+        val trimmed = username.trim()
+        if (trimmed.contains(" ")) return false
+        return trimmed.matches(Regex("^[a-zA-Z0-9_-]{3,30}$"))
+    }
+
+    fun toCanonicalUsername(username: String): String {
+        return username.trim().lowercase().replace(" ", "_")
+    }
+
     /**
-     * Registers a new user with Firebase Authentication (Email/Password).
+     * Registers a new user account keyed strictly by their chosen username in the database.
+     * Guaranteed never to use random IDs or create duplicate nodes for existing users.
      */
-    suspend fun register(
-        emailOrUsername: String,
+    suspend fun registerWithDetails(
+        email: String,
         password: String,
-        desiredUsername: String? = null
+        displayName: String,
+        username: String
     ): Result<AuthSession> = withContext(Dispatchers.IO) {
-        val cleanInput = emailOrUsername.trim()
-        if (cleanInput.length < 3) {
-            return@withContext Result.failure(IllegalArgumentException("Email or username must be at least 3 characters."))
+        val cleanUsername = username.trim()
+        if (cleanUsername.contains(" ")) {
+            return@withContext Result.failure(IllegalArgumentException("Username cannot contain spaces. Use only letters, numbers, and underscores (e.g. ussr_error_404)."))
+        }
+        if (!isValidUsername(cleanUsername)) {
+            return@withContext Result.failure(IllegalArgumentException("Username must be 3-30 characters long and contain only letters, numbers, hyphens, or underscores."))
+        }
+        val cleanEmail = email.trim()
+        if (cleanEmail.isBlank() || !cleanEmail.contains("@") || !cleanEmail.contains(".")) {
+            return@withContext Result.failure(IllegalArgumentException("Please enter a valid email address."))
         }
         if (password.length < 6) {
             return@withContext Result.failure(IllegalArgumentException("Password must be at least 6 characters long."))
         }
 
-        val effectiveEmail = resolveEmail(cleanInput)
-        val displayName = (desiredUsername?.trim()?.ifBlank { null })
-            ?: (if (cleanInput.contains("@")) cleanInput.substringBefore('@') else cleanInput)
+        val canonicalUsername = toCanonicalUsername(cleanUsername)
+        val cleanDisplayName = displayName.trim().ifBlank { cleanUsername }
 
-        val authResult = suspendCancellableCoroutine<Result<FirebaseUser>> { cont ->
-            firebaseAuth.createUserWithEmailAndPassword(effectiveEmail, password)
-                .addOnSuccessListener { result ->
-                    val user = result.user
-                    if (user != null) {
-                        // Set display name in Firebase Auth
-                        val profileUpdate = UserProfileChangeRequest.Builder()
-                            .setDisplayName(displayName)
-                            .build()
-                        user.updateProfile(profileUpdate).addOnCompleteListener {
-                            if (cont.isActive) cont.resume(Result.success(user))
-                        }
-                    } else {
-                        if (cont.isActive) cont.resume(Result.failure(Exception("Created user is null.")))
-                    }
+        val db = getSafeDatabaseInstance()
+            ?: return@withContext Result.failure(Exception("Database connection unavailable. Please check your internet connection."))
+
+        // 1. Check if node /users/{canonicalUsername} already exists in database
+        val existingNodeSnapshot = suspendCancellableCoroutine<DataSnapshot?> { cont ->
+            db.getReference("users").child(canonicalUsername).addListenerForSingleValueEvent(object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    if (cont.isActive) cont.resume(snapshot)
                 }
-                .addOnFailureListener { ex ->
-                    Log.e(tag, "Firebase Auth createUser failed: ${ex.message}")
-                    if (cont.isActive) cont.resume(Result.failure(ex))
+                override fun onCancelled(error: DatabaseError) {
+                    if (cont.isActive) cont.resume(null)
                 }
+            })
         }
 
-        if (authResult.isFailure) {
-            return@withContext Result.failure(authResult.exceptionOrNull() ?: Exception("Registration failed."))
+        if (existingNodeSnapshot != null && existingNodeSnapshot.exists()) {
+            return@withContext Result.failure(IllegalArgumentException("Username '$canonicalUsername' is already taken. Please choose another username or sign in."))
         }
 
-        val user = authResult.getOrThrow()
-        val uid = user.uid
+        // 2. Check if email is already registered under any existing user node
+        val allUsersSnapshot = suspendCancellableCoroutine<DataSnapshot?> { cont ->
+            db.getReference("users").addListenerForSingleValueEvent(object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    if (cont.isActive) cont.resume(snapshot)
+                }
+                override fun onCancelled(error: DatabaseError) {
+                    if (cont.isActive) cont.resume(null)
+                }
+            })
+        }
+
+        if (allUsersSnapshot != null && allUsersSnapshot.exists()) {
+            for (child in allUsersSnapshot.children) {
+                val existingEmail = child.child("profile/email").getValue(String::class.java)?.trim()
+                    ?: child.child("auth/email").getValue(String::class.java)?.trim()
+                if (existingEmail != null && existingEmail.equals(cleanEmail, ignoreCase = true)) {
+                    val existingUserKey = child.key ?: canonicalUsername
+                    return@withContext Result.failure(IllegalArgumentException("An account with email '$cleanEmail' already exists with username '@$existingUserKey'. Please sign in instead."))
+                }
+            }
+        }
+
+        // Also register with Firebase Auth in background if possible
+        try {
+            firebaseAuth.createUserWithEmailAndPassword(cleanEmail, password)
+        } catch (_: Exception) {}
+
         val now = System.currentTimeMillis()
         val expiry = now + (30L * 24 * 60 * 60 * 1000L)
+        val pwdHash = hashPassword(password)
 
-        // Initialize complete canonical schema under /users/{uid}/
+        // Initialize user schema directly under /users/{canonicalUsername}/
         initializeNewUserAccount(
-            uid = uid,
-            displayName = displayName,
-            email = effectiveEmail,
+            uid = canonicalUsername,
+            displayName = cleanDisplayName,
+            email = cleanEmail,
             isAnonymous = false,
             providerId = "password",
-            now = now
+            now = now,
+            passwordHash = pwdHash
         )
 
         val session = AuthSession(
-            sessionToken = uid,
-            userId = uid,
-            username = displayName,
-            email = effectiveEmail,
+            sessionToken = canonicalUsername,
+            userId = canonicalUsername,
+            username = cleanDisplayName,
+            email = cleanEmail,
             isAnonymous = false,
             providerId = "password",
             expiresAt = expiry
@@ -228,20 +294,42 @@ class GemoAuthManager(private val context: Context) {
         prefs.saveAuthSession(session)
         _currentSession.value = session
         _currentUserProfile.value = UserProfile(
-            userId = uid,
-            username = displayName,
-            email = effectiveEmail,
+            userId = canonicalUsername,
+            username = cleanDisplayName,
+            email = cleanEmail,
             isAnonymous = false,
             providerId = "password",
-            sessionToken = uid
+            sessionToken = canonicalUsername
         )
 
-        Log.i(tag, "Successfully created Firebase Auth account for '$displayName' (uid=$uid)")
+        Log.i(tag, "Successfully created account for '@$canonicalUsername' under /users/$canonicalUsername/")
         Result.success(session)
     }
 
     /**
-     * Authenticates an existing user via Firebase Authentication (Email/Password).
+     * Backward-compatible registration delegating to registerWithDetails.
+     */
+    suspend fun register(
+        emailOrUsername: String,
+        password: String,
+        desiredUsername: String? = null
+    ): Result<AuthSession> = withContext(Dispatchers.IO) {
+        val cleanInput = emailOrUsername.trim()
+        val defaultUsername = desiredUsername?.trim()?.ifBlank { null }
+            ?: (if (cleanInput.contains("@")) cleanInput.substringBefore('@') else cleanInput)
+        val effectiveEmail = if (cleanInput.contains("@")) cleanInput else resolveEmail(cleanInput)
+        registerWithDetails(
+            email = effectiveEmail,
+            password = password,
+            displayName = defaultUsername,
+            username = defaultUsername
+        )
+    }
+
+    /**
+     * Authenticates an existing user without creating duplicates.
+     * Searches database first by username node or email, verifies credentials,
+     * and guarantees the user logs into their exact existing account.
      */
     suspend fun login(
         emailOrUsername: String,
@@ -249,14 +337,179 @@ class GemoAuthManager(private val context: Context) {
     ): Result<AuthSession> = withContext(Dispatchers.IO) {
         val cleanInput = emailOrUsername.trim()
         if (cleanInput.isBlank()) {
-            return@withContext Result.failure(IllegalArgumentException("Please enter your email or username."))
+            return@withContext Result.failure(IllegalArgumentException("Please enter your username or email."))
         }
         if (password.isBlank()) {
             return@withContext Result.failure(IllegalArgumentException("Please enter your password."))
         }
 
-        val effectiveEmail = resolveEmail(cleanInput)
+        val canonicalInput = toCanonicalUsername(cleanInput)
+        val pwdHash = hashPassword(password)
 
+        val db = getSafeDatabaseInstance()
+
+        // 1. Direct lookup by node key in /users/{canonicalInput}
+        if (db != null) {
+            val directNode = suspendCancellableCoroutine<DataSnapshot?> { cont ->
+                db.getReference("users").child(canonicalInput).addListenerForSingleValueEvent(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        if (cont.isActive) cont.resume(snapshot)
+                    }
+                    override fun onCancelled(error: DatabaseError) {
+                        if (cont.isActive) cont.resume(null)
+                    }
+                })
+            }
+
+            if (directNode != null && directNode.exists()) {
+                val storedHash = directNode.child("auth/passwordHash").getValue(String::class.java)
+                val storedEmail = directNode.child("profile/email").getValue(String::class.java)
+                    ?: directNode.child("auth/email").getValue(String::class.java)
+                val displayName = directNode.child("profile/username").getValue(String::class.java)?.ifBlank { null }
+                    ?: directNode.child("auth/canonicalUsername").getValue(String::class.java)
+                    ?: canonicalInput
+
+                var isPasswordValid = storedHash != null && storedHash == pwdHash
+
+                // If passwordHash not found, check with Firebase Auth for legacy accounts
+                if (!isPasswordValid && !storedEmail.isNullOrBlank()) {
+                    val fbSuccess = try {
+                        val authTask = firebaseAuth.signInWithEmailAndPassword(storedEmail, password)
+                        suspendCancellableCoroutine<Boolean> { cont ->
+                            authTask.addOnSuccessListener { if (cont.isActive) cont.resume(true) }
+                                .addOnFailureListener { if (cont.isActive) cont.resume(false) }
+                        }
+                    } catch (_: Exception) { false }
+
+                    if (fbSuccess) {
+                        isPasswordValid = true
+                        directNode.ref.child("auth/passwordHash").setValue(pwdHash)
+                    }
+                }
+
+                if (isPasswordValid) {
+                    val now = System.currentTimeMillis()
+                    val expiry = now + (30L * 24 * 60 * 60 * 1000L)
+                    directNode.ref.child("auth/lastSignInAt").setValue(now)
+
+                    ensureUserSchemaComplete(uid = canonicalInput, displayName = displayName, email = storedEmail, passwordHash = pwdHash)
+
+                    val session = AuthSession(
+                        sessionToken = canonicalInput,
+                        userId = canonicalInput,
+                        username = displayName,
+                        email = storedEmail,
+                        isAnonymous = false,
+                        providerId = "password",
+                        expiresAt = expiry
+                    )
+
+                    prefs.saveAuthSession(session)
+                    _currentSession.value = session
+                    _currentUserProfile.value = UserProfile(
+                        userId = canonicalInput,
+                        username = displayName,
+                        email = storedEmail,
+                        isAnonymous = false,
+                        providerId = "password",
+                        sessionToken = canonicalInput
+                    )
+
+                    Log.i(tag, "Logged in to existing user node '@$canonicalInput'")
+                    return@withContext Result.success(session)
+                } else {
+                    return@withContext Result.failure(IllegalArgumentException("Incorrect password for account '$cleanInput'."))
+                }
+            }
+
+            // 2. Search all users for matching email or canonicalUsername
+            val allUsers = suspendCancellableCoroutine<DataSnapshot?> { cont ->
+                db.getReference("users").addListenerForSingleValueEvent(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        if (cont.isActive) cont.resume(snapshot)
+                    }
+                    override fun onCancelled(error: DatabaseError) {
+                        if (cont.isActive) cont.resume(null)
+                    }
+                })
+            }
+
+            if (allUsers != null && allUsers.exists()) {
+                for (child in allUsers.children) {
+                    val childKey = child.key ?: continue
+                    val pEmail = child.child("profile/email").getValue(String::class.java)?.trim()
+                    val aEmail = child.child("auth/email").getValue(String::class.java)?.trim()
+                    val cUsername = child.child("profile/canonicalUsername").getValue(String::class.java)?.trim()
+                        ?: child.child("auth/canonicalUsername").getValue(String::class.java)?.trim()
+                        ?: childKey.lowercase()
+
+                    val matchesEmail = (!pEmail.isNullOrBlank() && pEmail.equals(cleanInput, ignoreCase = true)) ||
+                                       (!aEmail.isNullOrBlank() && aEmail.equals(cleanInput, ignoreCase = true))
+                    val matchesUsername = cUsername.equals(canonicalInput, ignoreCase = true) || childKey.equals(cleanInput, ignoreCase = true)
+
+                    if (matchesEmail || matchesUsername) {
+                        val storedHash = child.child("auth/passwordHash").getValue(String::class.java)
+                        val displayName = child.child("profile/username").getValue(String::class.java)?.ifBlank { null }
+                            ?: childKey
+                        val userEmail = pEmail ?: aEmail
+
+                        var isPasswordValid = storedHash != null && storedHash == pwdHash
+
+                        if (!isPasswordValid && !userEmail.isNullOrBlank()) {
+                            val fbSuccess = try {
+                                val authTask = firebaseAuth.signInWithEmailAndPassword(userEmail, password)
+                                suspendCancellableCoroutine<Boolean> { cont ->
+                                    authTask.addOnSuccessListener { if (cont.isActive) cont.resume(true) }
+                                        .addOnFailureListener { if (cont.isActive) cont.resume(false) }
+                                }
+                            } catch (_: Exception) { false }
+
+                            if (fbSuccess) {
+                                isPasswordValid = true
+                                child.ref.child("auth/passwordHash").setValue(pwdHash)
+                            }
+                        }
+
+                        if (isPasswordValid) {
+                            val now = System.currentTimeMillis()
+                            val expiry = now + (30L * 24 * 60 * 60 * 1000L)
+                            child.ref.child("auth/lastSignInAt").setValue(now)
+
+                            ensureUserSchemaComplete(uid = childKey, displayName = displayName, email = userEmail, passwordHash = pwdHash)
+
+                            val session = AuthSession(
+                                sessionToken = childKey,
+                                userId = childKey,
+                                username = displayName,
+                                email = userEmail,
+                                isAnonymous = false,
+                                providerId = "password",
+                                expiresAt = expiry
+                            )
+
+                            prefs.saveAuthSession(session)
+                            _currentSession.value = session
+                            _currentUserProfile.value = UserProfile(
+                                userId = childKey,
+                                username = displayName,
+                                email = userEmail,
+                                isAnonymous = false,
+                                providerId = "password",
+                                sessionToken = childKey
+                            )
+
+                            Log.i(tag, "Logged in to existing user node '@$childKey' matching $cleanInput")
+                            return@withContext Result.success(session)
+                        } else {
+                            return@withContext Result.failure(IllegalArgumentException("Incorrect password for account '$cleanInput'."))
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Fallback: Firebase Auth sign in
+        val effectiveEmail = resolveEmail(cleanInput)
         val authResult = suspendCancellableCoroutine<Result<FirebaseUser>> { cont ->
             firebaseAuth.signInWithEmailAndPassword(effectiveEmail, password)
                 .addOnSuccessListener { result ->
@@ -268,48 +521,68 @@ class GemoAuthManager(private val context: Context) {
                     }
                 }
                 .addOnFailureListener { ex ->
-                    Log.e(tag, "Firebase Auth signIn failed: ${ex.message}")
                     if (cont.isActive) cont.resume(Result.failure(ex))
                 }
         }
 
-        if (authResult.isFailure) {
-            return@withContext Result.failure(authResult.exceptionOrNull() ?: Exception("Invalid credentials."))
+        if (authResult.isSuccess) {
+            val user = authResult.getOrThrow()
+            val userEmail = user.email ?: effectiveEmail
+            val defaultUsername = userEmail.substringBefore('@').lowercase().replace(Regex("[^a-z0-9_-]"), "_")
+
+            var targetUid = defaultUsername
+            if (db != null) {
+                val checkSnapshot = suspendCancellableCoroutine<DataSnapshot?> { cont ->
+                    db.getReference("users").addListenerForSingleValueEvent(object : ValueEventListener {
+                        override fun onDataChange(snapshot: DataSnapshot) { if (cont.isActive) cont.resume(snapshot) }
+                        override fun onCancelled(error: DatabaseError) { if (cont.isActive) cont.resume(null) }
+                    })
+                }
+                if (checkSnapshot != null && checkSnapshot.exists()) {
+                    for (c in checkSnapshot.children) {
+                        val cKey = c.key ?: continue
+                        val cEmail = c.child("profile/email").getValue(String::class.java)
+                            ?: c.child("auth/email").getValue(String::class.java)
+                        if (cEmail != null && cEmail.equals(userEmail, ignoreCase = true)) {
+                            targetUid = cKey
+                            break
+                        }
+                    }
+                }
+            }
+
+            val displayName = user.displayName?.ifBlank { null } ?: targetUid
+            val now = System.currentTimeMillis()
+            val expiry = now + (30L * 24 * 60 * 60 * 1000L)
+
+            ensureUserSchemaComplete(uid = targetUid, displayName = displayName, email = userEmail, passwordHash = pwdHash)
+            db?.getReference("users")?.child(targetUid)?.child("auth/passwordHash")?.setValue(pwdHash)
+
+            val session = AuthSession(
+                sessionToken = targetUid,
+                userId = targetUid,
+                username = displayName,
+                email = userEmail,
+                isAnonymous = false,
+                providerId = "password",
+                expiresAt = expiry
+            )
+
+            prefs.saveAuthSession(session)
+            _currentSession.value = session
+            _currentUserProfile.value = UserProfile(
+                userId = targetUid,
+                username = displayName,
+                email = userEmail,
+                isAnonymous = false,
+                providerId = "password",
+                sessionToken = targetUid
+            )
+
+            return@withContext Result.success(session)
         }
 
-        val user = authResult.getOrThrow()
-        val uid = user.uid
-        val displayName = user.displayName?.ifBlank { null }
-            ?: user.email?.substringBefore('@')
-            ?: if (cleanInput.contains("@")) cleanInput.substringBefore('@') else cleanInput
-        val now = System.currentTimeMillis()
-        val expiry = now + (30L * 24 * 60 * 60 * 1000L)
-
-        ensureUserSchemaComplete(uid = uid, displayName = displayName, email = user.email)
-
-        val session = AuthSession(
-            sessionToken = uid,
-            userId = uid,
-            username = displayName,
-            email = user.email ?: effectiveEmail,
-            isAnonymous = false,
-            providerId = "password",
-            expiresAt = expiry
-        )
-
-        prefs.saveAuthSession(session)
-        _currentSession.value = session
-        _currentUserProfile.value = UserProfile(
-            userId = uid,
-            username = displayName,
-            email = user.email ?: effectiveEmail,
-            isAnonymous = false,
-            providerId = "password",
-            sessionToken = uid
-        )
-
-        Log.i(tag, "Successfully logged in via Firebase Auth '$displayName' (uid=$uid)")
-        Result.success(session)
+        Result.failure(IllegalArgumentException("Invalid username or password."))
     }
 
     /**
@@ -338,17 +611,65 @@ class GemoAuthManager(private val context: Context) {
         }
 
         val user = authResult.getOrThrow()
-        val uid = user.uid
-        val displayName = user.displayName?.ifBlank { null } ?: user.email?.substringBefore('@') ?: "Google User"
+        val userEmail = user.email?.trim() ?: ""
+        val googleDisplayName = user.displayName?.ifBlank { null }
+            ?: if (userEmail.isNotBlank()) userEmail.substringBefore('@') else "Google User"
+
+        val db = getSafeDatabaseInstance()
+        var targetUid: String? = null
+        var foundDisplayName: String? = null
+
+        // 1. First verify if an existing user node in database already exists for this email
+        if (db != null && userEmail.isNotBlank()) {
+            val allUsers = suspendCancellableCoroutine<DataSnapshot?> { cont ->
+                db.getReference("users").addListenerForSingleValueEvent(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        if (cont.isActive) cont.resume(snapshot)
+                    }
+                    override fun onCancelled(error: DatabaseError) {
+                        if (cont.isActive) cont.resume(null)
+                    }
+                })
+            }
+
+            if (allUsers != null && allUsers.exists()) {
+                for (child in allUsers.children) {
+                    val childKey = child.key ?: continue
+                    val pEmail = child.child("profile/email").getValue(String::class.java)?.trim()
+                    val aEmail = child.child("auth/email").getValue(String::class.java)?.trim()
+                    if ((!pEmail.isNullOrBlank() && pEmail.equals(userEmail, ignoreCase = true)) ||
+                        (!aEmail.isNullOrBlank() && aEmail.equals(userEmail, ignoreCase = true)) ||
+                        childKey.equals(user.uid, ignoreCase = true)
+                    ) {
+                        targetUid = childKey
+                        foundDisplayName = child.child("profile/username").getValue(String::class.java)?.ifBlank { null }
+                            ?: child.child("auth/canonicalUsername").getValue(String::class.java)?.ifBlank { null }
+                            ?: childKey
+                        Log.i(tag, "Google sign-in linked to existing account node '@$childKey' for email '$userEmail'")
+                        break
+                    }
+                }
+            }
+        }
+
+        // 2. If no existing account found in database, use canonical username derived from email or clean name
+        val effectiveUid = targetUid ?: run {
+            val base = if (userEmail.isNotBlank()) userEmail.substringBefore('@') else googleDisplayName
+            toCanonicalUsername(base)
+        }
+        val effectiveDisplayName = foundDisplayName ?: googleDisplayName
+
         val now = System.currentTimeMillis()
         val expiry = now + (30L * 24 * 60 * 60 * 1000L)
 
-        ensureUserSchemaComplete(uid = uid, displayName = displayName, email = user.email)
+        // Ensure user schema is complete under the unified username node in RTDB
+        ensureUserSchemaComplete(uid = effectiveUid, displayName = effectiveDisplayName, email = user.email)
+        db?.getReference("users")?.child(effectiveUid)?.child("auth/lastSignInAt")?.setValue(now)
 
         val session = AuthSession(
-            sessionToken = uid,
-            userId = uid,
-            username = displayName,
+            sessionToken = effectiveUid,
+            userId = effectiveUid,
+            username = effectiveDisplayName,
             email = user.email,
             isAnonymous = false,
             providerId = "google.com",
@@ -358,15 +679,15 @@ class GemoAuthManager(private val context: Context) {
         prefs.saveAuthSession(session)
         _currentSession.value = session
         _currentUserProfile.value = UserProfile(
-            userId = uid,
-            username = displayName,
+            userId = effectiveUid,
+            username = effectiveDisplayName,
             email = user.email,
             isAnonymous = false,
             providerId = "google.com",
-            sessionToken = uid
+            sessionToken = effectiveUid
         )
 
-        Log.i(tag, "Successfully signed in with Google '$displayName' (uid=$uid)")
+        Log.i(tag, "Successfully signed in with Google '$effectiveDisplayName' (accountNode=@$effectiveUid, email=${user.email})")
         Result.success(session)
     }
 
@@ -445,7 +766,8 @@ class GemoAuthManager(private val context: Context) {
         email: String?,
         isAnonymous: Boolean,
         providerId: String = "password",
-        now: Long = System.currentTimeMillis()
+        now: Long = System.currentTimeMillis(),
+        passwordHash: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         val db = try { getSafeDatabaseInstance() } catch (_: Throwable) { null }
         if (db == null) {
@@ -465,13 +787,20 @@ class GemoAuthManager(private val context: Context) {
             "updatedAt" to now
         )
 
-        val authMap = mapOf(
+        val authMap = mutableMapOf<String, Any>(
             "accountStatus" to "active",
             "providerId" to providerId,
             "isAnonymous" to isAnonymous,
+            "canonicalUsername" to uid.lowercase().trim(),
             "createdAt" to now,
             "lastSignInAt" to now
         )
+        if (!passwordHash.isNullOrBlank()) {
+            authMap["passwordHash"] = passwordHash
+        }
+        if (!email.isNullOrBlank()) {
+            authMap["email"] = email
+        }
 
         val settingsMap = mapOf(
             "agent_mode_enabled" to false,
@@ -572,7 +901,8 @@ class GemoAuthManager(private val context: Context) {
     suspend fun ensureUserSchemaComplete(
         uid: String,
         displayName: String,
-        email: String? = null
+        email: String? = null,
+        passwordHash: String? = null
     ) = withContext(Dispatchers.IO) {
         try {
             val db = getSafeDatabaseInstance() ?: return@withContext
@@ -596,10 +926,16 @@ class GemoAuthManager(private val context: Context) {
                         }
 
                         if (!snapshot.hasChild("auth")) {
-                            backfills["auth"] = mapOf(
+                            val authM = mutableMapOf<String, Any>(
                                 "accountStatus" to "active",
+                                "canonicalUsername" to uid.lowercase().trim(),
                                 "lastSignInAt" to now
                             )
+                            if (!passwordHash.isNullOrBlank()) authM["passwordHash"] = passwordHash
+                            if (!email.isNullOrBlank()) authM["email"] = email
+                            backfills["auth"] = authM
+                        } else if (!passwordHash.isNullOrBlank() && !snapshot.hasChild("auth/passwordHash")) {
+                            userRef.child("auth/passwordHash").setValue(passwordHash)
                         }
 
                         if (!snapshot.hasChild("settings")) {
